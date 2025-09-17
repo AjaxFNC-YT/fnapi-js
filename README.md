@@ -75,4 +75,4 @@ const aesKeys = await fnApi.aes.get();
 
 ## License
 
-MIT
+MIT (Meow!)
