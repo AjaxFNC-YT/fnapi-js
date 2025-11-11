@@ -384,6 +384,7 @@ declare module 'fnapi-js' {
         static LEGO: string;
         static LEGOKIT: string;
         static BEAN: string;
+        static SIDEKICK: string;
 
         static outfit(): string;
         static backpack(): string;
@@ -406,6 +407,7 @@ declare module 'fnapi-js' {
         static lego(): string;
         static legokit(): string;
         static bean(): string;
+        static sidekick(): string;
     }
 
     export class Language {

@@ -111,6 +111,10 @@ class CosmeticType {
         PET: {
             value: 'pet',
             backendValue: 'AthenaPet'
+        },
+        SIDEKICK: {
+            value: 'sidekick',
+            backendValue: 'CosmeticCompanion'
         }
     };
 
@@ -160,6 +164,10 @@ class CosmeticType {
 
     static pickaxe() {
         return this.TYPES.PICKAXE.value;
+    }
+
+    static sidekick() {
+        return this.TYPES.SIDEKICK.value;
     }
 
     static backpack() {
