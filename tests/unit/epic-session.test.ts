@@ -146,6 +146,41 @@ describe('EpicAuthSession account binding', () => {
   });
 });
 
+describe('EpicAuthSession device auth reads', () => {
+  const deviceAuth = { deviceId: 'devid', accountId: 'ACC', secret: 'SECRET' };
+
+  it('retries listDeviceAuths with a read-capable token on a permission error', async () => {
+    const { mock, client } = setup(
+      { status: 403, body: { errorCode: 'errors.com.epicgames.common.missing_permission' } },
+      { body: { code: 'EXCH' } },
+      { body: makeToken({ access_token: 'READTOKEN' }) },
+      { body: [deviceAuth] },
+    );
+    const session = client.session(makeToken());
+
+    const result = await session.listDeviceAuths();
+
+    expect(result).toEqual([deviceAuth]);
+    expect(mock.calls).toBe(4);
+    expect(mock.requests[0]!.headers['authorization']).toBe('Bearer AT');
+    expect(mock.requests[1]!.path).toBe('/account/api/oauth/exchange');
+    const last = mock.lastRequest();
+    expect(last.path).toBe('/account/api/public/account/ACC/deviceAuth');
+    expect(last.headers['authorization']).toBe('Bearer READTOKEN');
+  });
+
+  it('does not switch tokens when the first read succeeds', async () => {
+    const { mock, client } = setup({ body: [deviceAuth] });
+    const session = client.session(makeToken());
+
+    const result = await session.listDeviceAuths();
+
+    expect(result).toEqual([deviceAuth]);
+    expect(mock.calls).toBe(1);
+    expect(mock.lastRequest().headers['authorization']).toBe('Bearer AT');
+  });
+});
+
 describe('EpicGamesClient defaults', () => {
   it('defaults to the fortniteAndroid game client', () => {
     const { client } = setup();

@@ -54,14 +54,15 @@ const auths = await epic.deviceAuths.list(accessToken, accountId);
 for (const a of auths) console.log(a.deviceId, a.lastAccess?.dateTime);
 ```
 
-::: warning Needs READ permission
-`list` and `get` require the `account:public:account:deviceAuths` **READ** action. A token minted from the **deviceAuth grant** (the one you log in with via `loginWithDeviceAuth`) carries `CREATE`+`DELETE` but not `READ`, so these two calls throw `EpicPermissionError` on it. Switch to a client that holds `READ` first:
+::: tip READ permission is handled for you
+`list` and `get` require the `account:public:account:deviceAuths` **READ** action. A token minted from the **deviceAuth grant** (the one you log in with via `loginWithDeviceAuth`) carries `CREATE`+`DELETE` but not `READ`. When you call these through a session, it detects the `EpicPermissionError` and transparently mints a READ-capable token (exchange-code → `fortnitePC`) for the retry, so this just works:
 
 ```ts
 const session = await epic.loginWithDeviceAuth(creds);
-const pc = await session.switchClient('fortnitePC'); // or 'launcherApp'
-const auths = await pc.listDeviceAuths();
+const auths = await session.listDeviceAuths();
 ```
+
+Calling `DeviceAuthManager.list` / `.get` directly with a raw token still needs one that holds `READ` — switch clients yourself (`session.switchClient('fortnitePC')`) if you go around the session.
 :::
 
 ## deviceAuths.get

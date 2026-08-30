@@ -7,7 +7,7 @@ import {
   type AuthClient,
   type AuthClientInput,
 } from './clients.js';
-import { EpicApiError } from './errors.js';
+import { EpicApiError, EpicPermissionError } from './errors.js';
 import {
   buildSignedMessage,
   decodeMessageBody,
@@ -744,8 +744,40 @@ export class EpicAuthSession {
     );
   }
 
+  private async readCapableToken(options?: { signal?: AbortSignal }): Promise<string> {
+    const target = resolveAuthClient('fortnitePC');
+    const exchange = await this.auth.createExchangeCode(this.accessToken, {
+      consumingClientId: target.clientId,
+      ...(options?.signal ? { signal: options.signal } : {}),
+    });
+    const token = await this.auth.exchangeCode(
+      target,
+      exchange.code,
+      options?.signal ? { signal: options.signal } : undefined,
+    );
+    return token.access_token;
+  }
+
+  private async withDeviceAuthRead<T>(
+    run: (token: string, accountId: string) => Promise<T>,
+    options?: { signal?: AbortSignal },
+  ): Promise<T> {
+    const accountId = this.requireAccountId();
+    const token = await this.ensureValid(options);
+    try {
+      return await run(token, accountId);
+    } catch (error) {
+      if (!(error instanceof EpicPermissionError)) throw error;
+      const readToken = await this.readCapableToken(options);
+      return run(readToken, accountId);
+    }
+  }
+
   listDeviceAuths(options?: { signal?: AbortSignal }): Promise<DeviceAuth[]> {
-    return this.deviceAuths.list(this.accessToken, this.requireAccountId(), options);
+    return this.withDeviceAuthRead(
+      (token, accountId) => this.deviceAuths.list(token, accountId, options),
+      options,
+    );
   }
 
   createDeviceAuth(options?: { signal?: AbortSignal }): Promise<DeviceAuth> {
@@ -753,7 +785,10 @@ export class EpicAuthSession {
   }
 
   getDeviceAuth(deviceId: string, options?: { signal?: AbortSignal }): Promise<DeviceAuth> {
-    return this.deviceAuths.get(this.accessToken, this.requireAccountId(), deviceId, options);
+    return this.withDeviceAuthRead(
+      (token, accountId) => this.deviceAuths.get(token, accountId, deviceId, options),
+      options,
+    );
   }
 
   deleteDeviceAuth(deviceId: string, options?: { signal?: AbortSignal }): Promise<void> {

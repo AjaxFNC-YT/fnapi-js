@@ -16,7 +16,7 @@ export default defineConfig({
       { text: 'Examples', link: '/guide/examples' },
       { text: 'Reference', link: '/fortnite/fortnite-api' },
       {
-        text: 'v2.0.0-beta.0',
+        text: 'v2.0.1-beta.0',
         items: [
           { text: 'npm', link: 'https://www.npmjs.com/package/fnapi-js' },
           { text: 'Releases', link: 'https://github.com/AjaxFNC-YT/fnapi-js/releases' },
