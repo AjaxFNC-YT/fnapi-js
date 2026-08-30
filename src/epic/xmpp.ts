@@ -1,6 +1,6 @@
 import { ConfigurationError, ValidationError } from '../core/errors.js';
 import { TypedEmitter } from './emitter.js';
-import { buildStanza, findChild, localName, parseStanza, type XmlNode } from './xml.js';
+import { buildStanza, findChild, localName, parseStanzas, type XmlNode } from './xml.js';
 
 export const XMPP_WEBSOCKET_URL = 'wss://xmpp-service-prod.ol.epicgames.com';
 export const XMPP_DOMAIN = 'prod.ol.epicgames.com';
@@ -513,10 +513,12 @@ export class XmppClient extends TypedEmitter<XmppEventMap> {
     this.options.debug?.('in', text);
     this.emit('raw', { direction: 'in', data: text });
 
-    const node = parseStanza(text);
-    if (!node) return;
-    this.emit('stanza', node);
-    this.routeStanza(node);
+    const nodes = parseStanzas(text);
+    if (nodes.length === 0) return;
+    for (const node of nodes) {
+      this.emit('stanza', node);
+      this.routeStanza(node);
+    }
   }
 
   private decodeBinary(data: unknown): string {

@@ -6,6 +6,7 @@ import {
   findChildren,
   localName,
   parseStanza,
+  parseStanzas,
   unescapeXml,
 } from '../../src/epic/xml.js';
 
@@ -119,5 +120,28 @@ describe('epic/xml parseStanza', () => {
   it('returns null on empty input', () => {
     expect(parseStanza('')).toBeNull();
     expect(parseStanza('   ')).toBeNull();
+  });
+});
+
+describe('epic/xml parseStanzas', () => {
+  it('parses every stanza packed into one frame', () => {
+    const frame =
+      '<presence from="a"/><presence from="b"/><presence from="c"><status>x</status></presence>';
+    const nodes = parseStanzas(frame);
+    expect(nodes.map((node) => node.attrs.from)).toEqual(['a', 'b', 'c']);
+    expect(findChild(nodes[2]!, 'status')?.text).toBe('x');
+  });
+
+  it('handles a prolog then multiple siblings', () => {
+    const nodes = parseStanzas('<?xml version="1.0"?><message from="x"/><iq id="1"/>');
+    expect(nodes).toHaveLength(2);
+    expect(nodes[0]!.name).toBe('message');
+    expect(nodes[1]!.name).toBe('iq');
+  });
+
+  it('returns a single node and an empty array as expected', () => {
+    expect(parseStanzas('<presence/>')).toHaveLength(1);
+    expect(parseStanzas('')).toEqual([]);
+    expect(parseStanzas('   ')).toEqual([]);
   });
 });

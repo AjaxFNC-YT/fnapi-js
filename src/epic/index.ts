@@ -386,6 +386,7 @@ export type {
 
 export {
   parseStanza,
+  parseStanzas,
   buildStanza,
   escapeXml,
   unescapeXml,

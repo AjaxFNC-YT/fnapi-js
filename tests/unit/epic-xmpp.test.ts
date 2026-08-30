@@ -192,6 +192,28 @@ describe('XmppClient presence handling', () => {
     expect([...client.presences.keys()]).toContain('friend1');
   });
 
+  it('routes every stanza when Epic batches many into one frame', async () => {
+    const { client, sockets } = makeClient();
+    const socket = await connect(client, sockets);
+    const received: FriendPresence[] = [];
+    client.on('presence', (presence) => received.push(presence));
+
+    socket.serverSend(
+      `<presence from="friendA@${HOST}/res"><status>{"Status":"A"}</status></presence>` +
+        `<presence from="friendB@${HOST}/res"><status>{"Status":"B"}</status></presence>` +
+        `<presence from="friendC@${HOST}/res"><status>{"Status":"C"}</status></presence>`,
+    );
+
+    expect(received.map((presence) => presence.accountId)).toEqual([
+      'friendA',
+      'friendB',
+      'friendC',
+    ]);
+    expect([...client.presences.keys()]).toEqual(
+      expect.arrayContaining(['friendA', 'friendB', 'friendC']),
+    );
+  });
+
   it('removes a friend from the cache on unavailable presence', async () => {
     const { client, sockets } = makeClient();
     const socket = await connect(client, sockets);

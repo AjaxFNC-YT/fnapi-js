@@ -80,6 +80,20 @@ class Scanner {
     return this.parseElement();
   }
 
+  parseAll(): XmlNode[] {
+    const nodes: XmlNode[] = [];
+    for (;;) {
+      this.skipProlog();
+      if (this.index >= this.source.length) break;
+      if (this.source[this.index] !== '<') break;
+      const before = this.index;
+      const node = this.parseElement();
+      if (node) nodes.push(node);
+      if (this.index <= before) break;
+    }
+    return nodes;
+  }
+
   private skipWhitespace(): void {
     while (this.index < this.source.length && /\s/.test(this.source[this.index]!)) this.index += 1;
   }
@@ -202,6 +216,10 @@ class Scanner {
 
 export function parseStanza(xml: string): XmlNode | null {
   return new Scanner(xml).parse();
+}
+
+export function parseStanzas(xml: string): XmlNode[] {
+  return new Scanner(xml).parseAll();
 }
 
 export function findChild(node: XmlNode, name: string): XmlNode | undefined {

@@ -358,6 +358,7 @@ export {
   XMPP_DEFAULT_PLATFORM,
   PRESENCE_OFFLINE_PERSIST_STAMP,
   parseStanza,
+  parseStanzas,
   buildStanza,
   escapeXml,
   unescapeXml,
