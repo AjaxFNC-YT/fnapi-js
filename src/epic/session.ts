@@ -116,6 +116,18 @@ import type {
   PlaytimeAddSecondsOptions,
 } from './playtime.js';
 import type {
+  LibraryManager,
+  LibraryItemsResponse,
+  LibraryItemsOptions,
+  LibraryAllItemsOptions,
+  LibraryRecord,
+  LibraryCollection,
+  LibraryCollectionItem,
+  LauncherLibraryResponse,
+  LauncherLibraryItemsOptions,
+  LibraryRequestOptions,
+} from './library.js';
+import type {
   EpicStatusManager,
   StatusOptions,
   StatusSummary,
@@ -158,6 +170,7 @@ export interface EpicAuthSessionInit {
   cloudStorage: CloudStorageManager;
   matchmaking: MatchmakingManager;
   playtime: PlaytimeManager;
+  library: LibraryManager;
   status: EpicStatusManager;
   client: AuthClient;
   token: OAuthToken;
@@ -195,6 +208,7 @@ export class EpicAuthSession {
   private readonly cloudStorageManager: CloudStorageManager;
   private readonly matchmakingManager: MatchmakingManager;
   private readonly playtimeManager: PlaytimeManager;
+  private readonly libraryManager: LibraryManager;
   private readonly statusManager: EpicStatusManager;
   private readonly allowCustomClients: boolean;
   private eosTokenValue: EosToken | null = null;
@@ -232,6 +246,7 @@ export class EpicAuthSession {
     this.cloudStorageManager = init.cloudStorage;
     this.matchmakingManager = init.matchmaking;
     this.playtimeManager = init.playtime;
+    this.libraryManager = init.library;
     this.statusManager = init.status;
     this.allowCustomClients = init.allowCustomClients ?? false;
     this.client = init.client;
@@ -342,6 +357,7 @@ export class EpicAuthSession {
       cloudStorage: this.cloudStorageManager,
       matchmaking: this.matchmakingManager,
       playtime: this.playtimeManager,
+      library: this.libraryManager,
       status: this.statusManager,
       client: target,
       token,
@@ -845,6 +861,76 @@ export class EpicAuthSession {
   async addPlaytimeSeconds(seconds: number, options?: PlaytimeAddSecondsOptions): Promise<void> {
     const token = await this.launcherToken();
     return this.playtimeManager.addSeconds(token, this.requireAccountId(), seconds, options);
+  }
+
+  async library(options?: LibraryItemsOptions): Promise<LibraryItemsResponse> {
+    const token = await this.launcherToken();
+    return this.libraryManager.items(token, options);
+  }
+
+  async libraryAll(options?: LibraryAllItemsOptions): Promise<LibraryRecord[]> {
+    const token = await this.launcherToken();
+    return this.libraryManager.allItems(token, options);
+  }
+
+  async libraryStateTokenStatus(stateToken: string, options?: LibraryRequestOptions): Promise<boolean> {
+    const token = await this.launcherToken();
+    return this.libraryManager.stateTokenStatus(token, stateToken, options);
+  }
+
+  async libraryCollections(options?: LibraryRequestOptions): Promise<LibraryCollection[]> {
+    const token = await this.launcherToken();
+    return this.libraryManager.collections(token, this.requireAccountId(), options);
+  }
+
+  async libraryCollectionItems(
+    collectionId: string,
+    options?: LibraryRequestOptions,
+  ): Promise<LibraryCollectionItem[]> {
+    const token = await this.launcherToken();
+    return this.libraryManager.collectionItems(token, collectionId, this.requireAccountId(), options);
+  }
+
+  async createLibraryCollection(name: string, options?: LibraryRequestOptions): Promise<LibraryCollection> {
+    const token = await this.launcherToken();
+    return this.libraryManager.createCollection(token, this.requireAccountId(), name, options);
+  }
+
+  async updateLibraryCollection(
+    collectionId: string,
+    name: string,
+    options?: LibraryRequestOptions,
+  ): Promise<LibraryCollection> {
+    const token = await this.launcherToken();
+    return this.libraryManager.updateCollection(token, this.requireAccountId(), collectionId, name, options);
+  }
+
+  async deleteLibraryCollection(collectionId: string, options?: LibraryRequestOptions): Promise<void> {
+    const token = await this.launcherToken();
+    return this.libraryManager.deleteCollection(token, this.requireAccountId(), collectionId, options);
+  }
+
+  async addLibraryCollectionItem(
+    collectionId: string,
+    item: LibraryCollectionItem,
+    options?: LibraryRequestOptions,
+  ): Promise<LibraryCollection> {
+    const token = await this.launcherToken();
+    return this.libraryManager.addCollectionItem(token, this.requireAccountId(), collectionId, item, options);
+  }
+
+  async removeLibraryCollectionItem(
+    collectionId: string,
+    item: LibraryCollectionItem,
+    options?: LibraryRequestOptions,
+  ): Promise<LibraryCollection> {
+    const token = await this.launcherToken();
+    return this.libraryManager.removeCollectionItem(token, this.requireAccountId(), collectionId, item, options);
+  }
+
+  async launcherLibrary(options?: LauncherLibraryItemsOptions): Promise<LauncherLibraryResponse> {
+    const token = await this.launcherToken();
+    return this.libraryManager.launcherItems(token, options);
   }
 
   async avatars(accountIds: readonly string[], options?: AvatarOptions): Promise<AvatarEntry[]> {

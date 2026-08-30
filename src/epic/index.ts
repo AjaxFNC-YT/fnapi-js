@@ -313,6 +313,28 @@ export type {
 } from './playtime.js';
 
 export {
+  LibraryManager,
+  LIBRARY_BASE_URL,
+  LAUNCHER_LIBRARY_BASE_URL,
+  buildLibraryCursor,
+} from './library.js';
+export type {
+  LibraryRecord,
+  LibraryResponseMetadata,
+  LibraryItemsResponse,
+  LibraryItemsOptions,
+  LibraryAllItemsOptions,
+  LibraryCollection,
+  LibraryCollectionItem,
+  LibraryCollectionItemsResponse,
+  LibraryStateTokenStatus,
+  LauncherLibraryRecord,
+  LauncherLibraryResponse,
+  LauncherLibraryItemsOptions,
+  LibraryRequestOptions,
+} from './library.js';
+
+export {
   EpicStatusManager,
   STATUS_BASE_URL,
   STATUS_FORTNITE_PATTERN,

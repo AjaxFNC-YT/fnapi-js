@@ -32,6 +32,7 @@ import { AVATAR_BASE_URL, AvatarManager } from './avatar.js';
 import { CloudStorageManager } from './cloudstorage.js';
 import { MatchmakingManager } from './matchmaking.js';
 import { PLAYTIME_BASE_URL, PlaytimeManager } from './playtime.js';
+import { LAUNCHER_LIBRARY_BASE_URL, LIBRARY_BASE_URL, LibraryManager } from './library.js';
 import { STATUS_BASE_URL, EpicStatusManager } from './status.js';
 import { EpicRestClient, type EpicRestOptions } from './rest.js';
 import { EpicAuthSession } from './session.js';
@@ -66,6 +67,8 @@ export class EpicGamesClient {
   public readonly ecosystemRest: RestClient;
   public readonly avatarRest: EpicRestClient;
   public readonly playtimeRest: EpicRestClient;
+  public readonly libraryRest: EpicRestClient;
+  public readonly launcherLibraryRest: EpicRestClient;
   public readonly statusRest: EpicRestClient;
   public readonly auth: AuthManager;
   public readonly deviceAuths: DeviceAuthManager;
@@ -88,6 +91,7 @@ export class EpicGamesClient {
   public readonly cloudStorage: CloudStorageManager;
   public readonly matchmaking: MatchmakingManager;
   public readonly playtime: PlaytimeManager;
+  public readonly library: LibraryManager;
   public readonly status: EpicStatusManager;
 
   private readonly defaultClient: AuthClient;
@@ -112,6 +116,8 @@ export class EpicGamesClient {
     this.userSearchRest = new EpicRestClient({ ...restOptions, baseUrl: USER_SEARCH_BASE_URL });
     this.avatarRest = new EpicRestClient({ ...restOptions, baseUrl: AVATAR_BASE_URL });
     this.playtimeRest = new EpicRestClient({ ...restOptions, baseUrl: PLAYTIME_BASE_URL });
+    this.libraryRest = new EpicRestClient({ ...restOptions, baseUrl: LIBRARY_BASE_URL });
+    this.launcherLibraryRest = new EpicRestClient({ ...restOptions, baseUrl: LAUNCHER_LIBRARY_BASE_URL });
     this.statusRest = new EpicRestClient({ ...restOptions, baseUrl: STATUS_BASE_URL });
     this.ecosystemRest = new RestClient({
       baseUrl: ECOSYSTEM_BASE_URL,
@@ -142,6 +148,7 @@ export class EpicGamesClient {
     this.cloudStorage = new CloudStorageManager(this.mcpRest);
     this.matchmaking = new MatchmakingManager(this.mcpRest);
     this.playtime = new PlaytimeManager(this.playtimeRest);
+    this.library = new LibraryManager(this.libraryRest, this.launcherLibraryRest);
     this.status = new EpicStatusManager(this.statusRest);
     this.defaultClient = resolveAuthClient(defaultClient ?? AuthClients.fortniteAndroid);
   }
@@ -180,6 +187,7 @@ export class EpicGamesClient {
       cloudStorage: this.cloudStorage,
       matchmaking: this.matchmaking,
       playtime: this.playtime,
+      library: this.library,
       status: this.status,
       client: this.client(client),
       token,

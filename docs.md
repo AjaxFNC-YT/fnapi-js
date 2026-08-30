@@ -3674,6 +3674,30 @@ for (const record of await session.playtimeAll())
   console.log(record.artifactId, record.totalTime);
 ```
 
+## Library
+<Badge type="info" text="method" />
+
+```ts
+library(options?: LibraryItemsOptions): Promise<LibraryItemsResponse>
+libraryAll(options?: LibraryAllItemsOptions): Promise<LibraryRecord[]>
+libraryStateTokenStatus(stateToken: string, options?: LibraryRequestOptions): Promise<boolean>
+libraryCollections(options?: LibraryRequestOptions): Promise<LibraryCollection[]>
+libraryCollectionItems(collectionId: string, options?: LibraryRequestOptions): Promise<LibraryCollectionItem[]>
+createLibraryCollection(name: string, options?: LibraryRequestOptions): Promise<LibraryCollection>
+updateLibraryCollection(collectionId: string, name: string, options?: LibraryRequestOptions): Promise<LibraryCollection>
+deleteLibraryCollection(collectionId: string, options?: LibraryRequestOptions): Promise<void>
+addLibraryCollectionItem(collectionId: string, item: LibraryCollectionItem, options?: LibraryRequestOptions): Promise<LibraryCollection>
+removeLibraryCollectionItem(collectionId: string, item: LibraryCollectionItem, options?: LibraryRequestOptions): Promise<LibraryCollection>
+launcherLibrary(options?: LauncherLibraryItemsOptions): Promise<LauncherLibraryResponse>
+```
+
+Read the account's **Epic Games Library** — every game and subscription the user owns, plus the collections that group them. `library` reads one page; `libraryAll` auto-paginates the whole library; the `*Collection*` methods read and manage user collections. Like playtime, the library service needs a **launcherApp** token, which the session mints and caches for you automatically. Account-bound sessions only. See [`LibraryManager`](/epic/library) for the full surface. `launcherLibrary` is the deprecated launcher-service proxy, kept for parity.
+
+```ts
+for (const record of await session.libraryAll())
+  console.log(record.sandboxName ?? record.namespace, record.recordType);
+```
+
 ## Avatars
 <Badge type="info" text="method" />
 

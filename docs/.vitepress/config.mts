@@ -16,7 +16,7 @@ export default defineConfig({
       { text: 'Examples', link: '/guide/examples' },
       { text: 'Reference', link: '/fortnite/fortnite-api' },
       {
-        text: 'v2.0.1-beta.0',
+        text: 'v2.0.2-beta.0',
         items: [
           { text: 'npm', link: 'https://www.npmjs.com/package/fnapi-js' },
           { text: 'Releases', link: 'https://github.com/AjaxFNC-YT/fnapi-js/releases' },
@@ -77,6 +77,7 @@ export default defineConfig({
         { text: "SocialBanManager", link: '/epic/social-ban' },
         { text: "StatsProxyManager", link: '/epic/stats' },
         { text: "FortniteGameManager", link: '/epic/game' },
+        { text: "LibraryManager", link: '/epic/library' },
         { text: "EcosystemEndpoint", link: '/epic/ecosystem' },
         { text: "Epic Errors", link: '/epic/errors' }
         ],

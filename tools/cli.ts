@@ -957,6 +957,65 @@ async function playtimeView(): Promise<void> {
   for (const entry of all.slice(0, 20)) console.log(`  ${preview(entry)}`);
 }
 
+async function libraryView(): Promise<void> {
+  const active = await getSession();
+  const records = await active.libraryAll();
+  console.log(`${records.length} library record(s):`);
+  for (const record of records.slice(0, 30)) {
+    const name = record.sandboxName ?? record.namespace;
+    console.log(`  ${name} — ${record.recordType ?? '?'} (${record.catalogItemId})`);
+  }
+}
+
+async function libraryItemView(): Promise<void> {
+  const active = await getSession();
+  const id = (await ask('catalog item id (or appName): ')).trim();
+  if (!id) {
+    console.log('cancelled');
+    return;
+  }
+  const records = await active.libraryAll();
+  const needle = id.toLowerCase();
+  const record = records.find(
+    (r) => r.catalogItemId.toLowerCase() === needle || r.appName?.toLowerCase() === needle,
+  );
+  if (!record) {
+    console.log(`no library record for "${id}"`);
+    return;
+  }
+  console.log(`name:        ${record.sandboxName ?? record.namespace}`);
+  console.log(`namespace:   ${record.namespace}`);
+  console.log(`catalogItem: ${record.catalogItemId}`);
+  console.log(`appName:     ${record.appName ?? '-'}`);
+  console.log(`productId:   ${record.productId ?? '-'}`);
+  console.log(`recordType:  ${record.recordType ?? '-'}`);
+  console.log(`acquired:    ${record.acquisitionDate ?? '-'}`);
+  console.log(`sandboxType: ${record.sandboxType ?? '-'}`);
+  console.log(`deps:        ${record.dependencies?.length ? record.dependencies.join(', ') : '-'}`);
+  console.log(`raw:         ${preview(record, 600)}`);
+}
+
+async function libraryCollectionsView(): Promise<void> {
+  const active = await getSession();
+  const collections = await active.libraryCollections();
+  console.log(`${collections.length} collection(s):`);
+  for (const collection of collections) {
+    console.log(`  ${collection.name} (${collection.collectionId})`);
+  }
+}
+
+async function libraryCollectionItemsView(): Promise<void> {
+  const active = await getSession();
+  const collectionId = await ask('collection id: ');
+  if (!collectionId) {
+    console.log('cancelled');
+    return;
+  }
+  const items = await active.libraryCollectionItems(collectionId);
+  console.log(`${items.length} item(s):`);
+  for (const item of items.slice(0, 30)) console.log(`  ${preview(item)}`);
+}
+
 async function avatarView(): Promise<void> {
   const active = await getSession();
   const id = await ask('account id (blank = you): ');
@@ -1971,6 +2030,17 @@ const economyMenu: Menu = {
   ],
 };
 
+const libraryMenu: Menu = {
+  title: 'library (owned games)',
+  note: 'reads the epic games library via a launcherApp token (minted automatically)',
+  items: [
+    { key: '1', label: 'list library (all owned items)', action: libraryView },
+    { key: '2', label: 'view item info (by id / appName)', action: libraryItemView },
+    { key: '3', label: 'list collections', action: libraryCollectionsView },
+    { key: '4', label: 'list collection items (by id)', action: libraryCollectionItemsView },
+  ],
+};
+
 const cloudStorageMenu: Menu = {
   title: 'cloud storage',
   items: [
@@ -2037,6 +2107,7 @@ const epicMenu: Menu = {
     { key: 'l', label: 'live bot (event-driven)', action: () => runMenu(liveMenu), submenu: true },
     { key: 'g', label: 'shop & gifting', action: () => runMenu(shopMenu), submenu: true },
     { key: '9', label: 'economy & progress', action: () => runMenu(economyMenu), submenu: true },
+    { key: 'y', label: 'library (owned games)', action: () => runMenu(libraryMenu), submenu: true },
     { key: 'c', label: 'cloud storage', action: () => runMenu(cloudStorageMenu), submenu: true },
     { key: 'e', label: 'eos / eas', action: () => runMenu(eosMenu), submenu: true },
     { key: 'm', label: 'matchmaking', action: () => runMenu(matchmakingMenu), submenu: true },
