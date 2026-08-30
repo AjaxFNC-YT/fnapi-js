@@ -1,0 +1,24 @@
+{
+  "apiKey": "",
+  "language": "en",
+  "timeout": 30000,
+  "retries": 3,
+  "cache": {
+    "enabled": false,
+    "ttl": 60000
+  },
+  "live": {
+    "playerName": "Ninja",
+    "cosmeticId": "CID_028_Athena_Commando_F",
+    "playlistId": "playlist_defaultsolo",
+    "creatorCode": "ninja"
+  },
+  "epic": {
+    "client": "fortniteAndroid",
+    "deviceAuth": {
+      "accountId": "",
+      "deviceId": "",
+      "secret": ""
+    }
+  }
+}

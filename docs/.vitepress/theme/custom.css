@@ -1,0 +1,54 @@
+@import url('https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --vp-c-brand-1: #6d5cff;
+  --vp-c-brand-2: #7c6cff;
+  --vp-c-brand-3: #8b7cff;
+  --vp-c-brand-soft: rgba(124, 108, 255, 0.14);
+  --vp-font-family-base: 'Onest', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --vp-font-family-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(120deg, #7c6cff, #4c9aff);
+}
+
+.dark {
+  --vp-c-brand-1: #9b8cff;
+  --vp-c-brand-2: #8b7cff;
+  --vp-c-brand-3: #6d5cff;
+  --vp-c-brand-soft: rgba(139, 124, 255, 0.16);
+  --vp-c-bg: #131318;
+  --vp-c-bg-alt: #0e0e12;
+  --vp-c-bg-soft: #1a1a21;
+  --vp-c-divider: #26262f;
+}
+
+@font-face {
+  font-family: 'Onest';
+  font-display: swap;
+  src: local('Onest');
+}
+
+.VPHero .name {
+  letter-spacing: -0.03em;
+}
+
+.VPHero .text {
+  font-size: clamp(28px, 4vw, 40px);
+  color: var(--vp-c-text-2);
+  font-weight: 600;
+}
+
+.vp-doc h2 {
+  border-top: 1px solid var(--vp-c-divider);
+  padding-top: 22px;
+  margin-top: 34px;
+}
+
+.vp-doc h2 .VPBadge {
+  transform: translateY(-2px);
+  margin-left: 8px;
+}
+
+.vp-doc h2 + p .VPBadge {
+  vertical-align: middle;
+}
