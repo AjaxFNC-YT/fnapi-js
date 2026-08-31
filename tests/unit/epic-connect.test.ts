@@ -3,12 +3,14 @@ import {
   ConnectClient,
   CONNECT_SEC_PROTOCOLS,
   CONNECT_WEBSOCKET_URL,
+  decodeEosProps,
+  normalizeConnectPresence,
   type ConnectClientOptions,
   type ConnectFriendMessage,
   type ConnectPartyMessage,
   type ConnectPresenceUpdate,
 } from '../../src/epic/connect.js';
-import { ValidationError } from '../../src/core/errors.js';
+import { ConfigurationError, ValidationError } from '../../src/core/errors.js';
 import { createMockConnectWebSocket, type MockWebSocket } from '../helpers/mockWebSocket.js';
 
 const NUL = String.fromCharCode(0);
@@ -68,10 +70,16 @@ describe('ConnectClient', () => {
     ).toThrow(ValidationError);
   });
 
+  it('rejects construction without a header-capable webSocket factory', () => {
+    expect(
+      () => new ConnectClient({ accountId: 'me', getAccessToken: () => 'token' }),
+    ).toThrow(ConfigurationError);
+  });
+
   it('opens the socket with the STOMP subprotocol header and Authorization header', async () => {
     const { client, socket } = await connectClient();
     expect(socket.url).toBe(CONNECT_WEBSOCKET_URL);
-    expect(socket.protocols).toBeUndefined();
+    expect(socket.protocols).toEqual(CONNECT_SEC_PROTOCOLS.split(','));
     expect(socket.headers['Sec-WebSocket-Protocol']).toBe(CONNECT_SEC_PROTOCOLS);
     expect(socket.headers['Authorization']).toBe('Bearer access-token');
     expect(socket.headers['Epic-Connect-Protocol']).toBe('stomp');
@@ -188,6 +196,42 @@ describe('ConnectClient', () => {
     await client.disconnect();
   });
 
+  it('caches and normalizes presence.v1.UPDATE into a FriendPresence', async () => {
+    const { client, socket } = await connectClient();
+    socket.serverSend(
+      messageFrame({
+        type: 'presence.v1.UPDATE',
+        payload: {
+          accountId: 'friend-3',
+          status: 'online',
+          perNamespaceStatus: {
+            Fortnite: { status: '{"Status":"Battle Royale Lobby","bIsPlaying":true,"bIsJoinable":true}' },
+          },
+        },
+      }),
+    );
+    const presence = client.getPresence('friend-3');
+    expect(presence?.available).toBe(true);
+    expect(presence?.playing).toBe(true);
+    expect(presence?.joinable).toBe(true);
+    expect(presence?.status?.Status).toBe('Battle Royale Lobby');
+    expect([...client.presences.keys()]).toEqual(['friend-3']);
+    await client.disconnect();
+  });
+
+  it('drops a cached presence when a friend goes offline', async () => {
+    const { client, socket } = await connectClient();
+    socket.serverSend(
+      messageFrame({ type: 'presence.v1.UPDATE', payload: { accountId: 'friend-4', status: 'online' } }),
+    );
+    expect(client.getPresence('friend-4')).not.toBeNull();
+    socket.serverSend(
+      messageFrame({ type: 'presence.v1.UPDATE', payload: { accountId: 'friend-4', status: 'offline' } }),
+    );
+    expect(client.getPresence('friend-4')).toBeNull();
+    await client.disconnect();
+  });
+
   it('emits an error for a non-4019 ERROR frame', async () => {
     const { client, socket } = await connectClient();
     const errors: Error[] = [];
@@ -244,5 +288,51 @@ describe('ConnectClient', () => {
     expect(closes).toHaveLength(1);
     expect(closes[0]?.code).toBe(1000);
     expect(client.state).toBe('closed');
+  });
+});
+
+describe('normalizeConnectPresence', () => {
+  it('returns null without an accountId', () => {
+    expect(normalizeConnectPresence({ status: 'online' })).toBeNull();
+  });
+
+  it('reads the FortniteStatus from a REST bulk row', () => {
+    const presence = normalizeConnectPresence({
+      accountId: 'friend-1',
+      status: '{"Status":"In a match","bIsPlaying":true,"bIsJoinable":false}',
+    });
+    expect(presence?.available).toBe(true);
+    expect(presence?.playing).toBe(true);
+    expect(presence?.joinable).toBe(false);
+    expect(presence?.status?.Status).toBe('In a match');
+    expect(presence?.jid).toBe('friend-1');
+  });
+
+  it('maps an away top-level status to a show value', () => {
+    const presence = normalizeConnectPresence({ accountId: 'friend-2', status: 'away' });
+    expect(presence?.available).toBe(true);
+    expect(presence?.show).toBe('away');
+  });
+
+  it('marks an offline status as unavailable', () => {
+    const presence = normalizeConnectPresence({ accountId: 'friend-3', status: 'offline' });
+    expect(presence?.available).toBe(false);
+  });
+});
+
+describe('decodeEosProps', () => {
+  it('decodes typed prefixes and leaves EOS_ keys raw', () => {
+    const decoded = decodeEosProps({
+      count: 'i2',
+      enabled: 'bfalse',
+      label: 'shello',
+      payload: 'm{"a":1}',
+      EOS_Platform: 'WIN',
+    });
+    expect(decoded['count']).toBe(2);
+    expect(decoded['enabled']).toBe(false);
+    expect(decoded['label']).toBe('hello');
+    expect(decoded['payload']).toEqual({ a: 1 });
+    expect(decoded['EOS_Platform']).toBe('WIN');
   });
 });

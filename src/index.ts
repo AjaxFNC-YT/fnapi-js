@@ -379,8 +379,11 @@ export {
   CONNECT_WEBSOCKET_URL,
   CONNECT_SUBPROTOCOL,
   CONNECT_SEC_PROTOCOLS,
+  normalizeConnectPresence,
+  decodeEosProps,
 } from './epic/index.js';
 export type {
+  FriendPresenceRow,
   LastOnlineEntry,
   LastOnlineResponse,
   PresenceOptions,

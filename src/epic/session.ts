@@ -20,7 +20,7 @@ import {
   type ChatSendResult,
   type ConversationData,
 } from './chat.js';
-import { ConnectClient, type ConnectClientOptions } from './connect.js';
+import { ConnectClient, normalizeConnectPresence, type ConnectClientOptions } from './connect.js';
 import type {
   MCPClient,
   MCPOperation,
@@ -70,7 +70,13 @@ import type {
 } from './game.js';
 import type { LightswitchManager, LightswitchStatus, LightswitchOptions } from './lightswitch.js';
 import type { SocialBanManager, SocialBanStatus, SocialBanOptions } from './socialBan.js';
-import type { PresenceManager, LastOnlineEntry, LastOnlineResponse, PresenceOptions } from './presence.js';
+import type {
+  PresenceManager,
+  FriendPresenceRow,
+  LastOnlineEntry,
+  LastOnlineResponse,
+  PresenceOptions,
+} from './presence.js';
 import { XmppClient } from './xmpp.js';
 import type { FriendPresence, XmppClientOptions } from './xmpp.js';
 import type {
@@ -181,6 +187,8 @@ const EOS_REFRESH_THRESHOLD_MS = 30_000;
 
 const REFRESH_THRESHOLD_MS = 15_000;
 
+const PRESENCE_REASSERT_MS = 30_000;
+
 function isReportableMismatch(error: unknown): boolean {
   if (!(error instanceof EpicApiError)) return false;
   return (error.errorCode ?? '').includes('is_reportable');
@@ -221,6 +229,7 @@ export class EpicAuthSession {
   private chatKeyJwt: string | null = null;
   private readonly conversationCache = new Map<string, ConversationData>();
   private connectClient: ConnectClient | null = null;
+  private presenceReassertTimer: ReturnType<typeof setInterval> | null = null;
   private liveClientValue: LiveClient | null = null;
   private customStatusValue: string | null = null;
   public readonly client: AuthClient;
@@ -1269,19 +1278,42 @@ export class EpicAuthSession {
         ...options,
         accountId,
         getAccessToken: async () => (await this.userEasToken()).access_token,
-        onConnected: async (connectionId) => {
-          const eas = await this.userEasToken();
-          await this.chatService.sendPresence(eas.access_token, accountId, connectionId, {
-            ...(this.customStatusValue !== null ? { activity: this.customStatusValue } : {}),
-          });
-        },
+        onConnected: (connectionId) => this.announcePresence(connectionId),
       });
     }
     await this.connectClient.connect();
+    this.startPresenceReassert();
     return this.connectClient;
   }
 
+  private async announcePresence(connectionId: string): Promise<void> {
+    const accountId = this.requireAccountId();
+    const eas = await this.userEasToken();
+    await this.chatService.sendPresence(eas.access_token, accountId, connectionId, {
+      ...(this.customStatusValue !== null ? { activity: this.customStatusValue } : {}),
+    });
+  }
+
+  private startPresenceReassert(): void {
+    if (this.presenceReassertTimer) return;
+    this.presenceReassertTimer = setInterval(() => {
+      const connectionId = this.connectClient?.connection;
+      if (!connectionId || !this.connectClient?.connected) return;
+      void this.announcePresence(connectionId).catch(() => undefined);
+    }, PRESENCE_REASSERT_MS);
+    const timer = this.presenceReassertTimer as { unref?: () => void };
+    if (typeof timer.unref === 'function') timer.unref();
+  }
+
+  private stopPresenceReassert(): void {
+    if (this.presenceReassertTimer) {
+      clearInterval(this.presenceReassertTimer);
+      this.presenceReassertTimer = null;
+    }
+  }
+
   async disconnectEvents(): Promise<void> {
+    this.stopPresenceReassert();
     if (!this.connectClient) return;
     await this.connectClient.disconnect();
     this.connectClient = null;
@@ -1348,9 +1380,42 @@ export class EpicAuthSession {
     this.xmppClient = null;
   }
 
-  async friendPresences(): Promise<FriendPresence[]> {
-    const client = await this.connectXmpp();
-    return [...client.presences.values()];
+  async friendsPresence(options?: { signal?: AbortSignal }): Promise<FriendPresenceRow[]> {
+    const token = await this.ensureValid();
+    return this.presenceManager.friendsPresence(token, this.requireAccountId(), options);
+  }
+
+  async friendPresences(options?: { signal?: AbortSignal }): Promise<FriendPresence[]> {
+    const accountId = this.requireAccountId();
+    const token = await this.ensureValid();
+    const merged = new Map<string, FriendPresence>();
+
+    let rows: FriendPresenceRow[] = [];
+    try {
+      rows = await this.presenceManager.friendsPresence(token, accountId, options);
+    } catch {
+      rows = [];
+    }
+    for (const row of rows) {
+      const presence = normalizeConnectPresence(row as unknown as Record<string, unknown>);
+      if (presence && presence.available) merged.set(presence.accountId, presence);
+    }
+
+    this.mergeLivePresence(merged, this.connectClient?.presences);
+    this.mergeLivePresence(merged, this.xmppClient?.presences);
+
+    return [...merged.values()];
+  }
+
+  private mergeLivePresence(
+    target: Map<string, FriendPresence>,
+    source?: ReadonlyMap<string, FriendPresence>,
+  ): void {
+    if (!source) return;
+    for (const [id, presence] of source) {
+      const existing = target.get(id);
+      if (!existing || presence.receivedAt >= existing.receivedAt) target.set(id, presence);
+    }
   }
 
   get liveClient(): LiveClient | null {

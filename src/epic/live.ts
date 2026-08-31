@@ -107,6 +107,7 @@ export interface LiveEventMap {
 export interface LiveClientOptions {
   xmpp?: Partial<Omit<XmppClientOptions, 'accountId' | 'getAccessToken'>>;
   connect?: Partial<Omit<ConnectClientOptions, 'accountId' | 'getAccessToken'>>;
+  connectEvents?: boolean;
   seedParty?: boolean;
   seedFriends?: boolean;
 }
@@ -166,7 +167,6 @@ export class LiveClient extends TypedEmitter<LiveEventMap> {
     if (this.started) return this;
     this.started = true;
     const xmpp = await this.session.connectXmpp(this.options.xmpp);
-    const events = await this.session.connectEvents(this.options.connect);
 
     xmpp.on('message', (message) => {
       void this.onXmppMessage(message);
@@ -174,10 +174,17 @@ export class LiveClient extends TypedEmitter<LiveEventMap> {
     xmpp.on('disconnected', (payload) => this.emit('disconnected', payload));
     xmpp.on('error', (error) => this.emit('error', error));
 
-    events.on('friend:message', (message) => this.emit('friend:message', message));
-    events.on('party:message', (message) => this.emit('party:message', message));
-    events.on('presence', (presence) => this.emit('presence', presence));
-    events.on('error', (error) => this.emit('error', error));
+    if (this.options.connectEvents !== false) {
+      try {
+        const events = await this.session.connectEvents(this.options.connect);
+        events.on('friend:message', (message) => this.emit('friend:message', message));
+        events.on('party:message', (message) => this.emit('party:message', message));
+        events.on('presence', (presence) => this.emit('presence', presence));
+        events.on('error', (error) => this.emit('error', error));
+      } catch (error) {
+        this.emit('error', error instanceof Error ? error : new Error(String(error)));
+      }
+    }
 
     await this.seed();
     this.emit('connected', undefined);

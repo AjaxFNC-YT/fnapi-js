@@ -45,10 +45,15 @@ Lazily creates the `LiveClient`, connects XMPP + the connect stream, seeds `bot.
 interface LiveClientOptions {
   xmpp?: Partial<XmppClientOptions>;      // minus accountId / getAccessToken
   connect?: Partial<ConnectClientOptions>; // minus accountId / getAccessToken
+  connectEvents?: boolean;                 // default true — attach the EOS connect stream
   seedParty?: boolean;                     // default true — fetch current party on start
   seedFriends?: boolean;                   // default true — fetch friends list on start
 }
 ```
+
+::: tip Degrading without the connect stream
+The EOS connect stream needs a WebSocket that can send an `Authorization` header, so it cannot run on a browser's native `WebSocket` (see below). When it fails to attach, `start()` no longer rejects — it emits an `error` event and continues with XMPP-only decoding, so party/friend notifications still flow. Set `connectEvents: false` to skip the connect stream entirely. Live friend presence remains available in any environment through [`session.friendPresences()`](/epic/presence#session-friendpresences), which reads the REST snapshot without a socket.
+:::
 
 ## LiveClient
 <Badge type="tip" text="class" />
@@ -193,3 +198,5 @@ const bot = await session.live({
   xmpp: { webSocket: factory },
 });
 ```
+
+The `ws` factory forwards `options.headers`, so it carries the bearer the connect stream needs. A factory that drops headers — a browser's native `WebSocket` wrapped as a factory, for example — makes `ConnectClient` throw a `ConfigurationError` at construction rather than connecting without auth. In that case either supply a header-capable factory or set `connectEvents: false` and read presence through [`session.friendPresences()`](/epic/presence#session-friendpresences).

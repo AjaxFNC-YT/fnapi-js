@@ -12,6 +12,16 @@ export interface LastOnlineEntry {
 
 export type LastOnlineResponse = Record<string, LastOnlineEntry[]>;
 
+export interface FriendPresenceRow {
+  accountId: string;
+  namespace?: string;
+  lastOnline?: string;
+  status?: string;
+  activity?: unknown;
+  props?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 export interface PresenceOptions {
   namespace?: string;
   signal?: AbortSignal;
@@ -60,5 +70,23 @@ export class PresenceManager {
   ): Promise<LastOnlineEntry | null> {
     const response = await this.lastOnline(accessToken, accountId, options);
     return response[accountId]?.[0] ?? null;
+  }
+
+  async friendsPresence(
+    accessToken: string,
+    accountId: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<FriendPresenceRow[]> {
+    requireString(accessToken, 'accessToken');
+    requireString(accountId, 'accountId');
+    const response = await this.rest.request<FriendPresenceRow[]>(
+      'GET',
+      `/presence/api/v1/_/friends/${encodeURIComponent(accountId)}`,
+      {
+        bearer: accessToken,
+        ...(options?.signal ? { signal: options.signal } : {}),
+      },
+    );
+    return Array.isArray(response.data) ? response.data : [];
   }
 }

@@ -1,7 +1,7 @@
 import { ConfigurationError, ValidationError } from '../core/errors.js';
 import { decodeMessageBody } from './chat.js';
 import { TypedEmitter } from './emitter.js';
-import type { WebSocketLike } from './xmpp.js';
+import type { FortniteStatus, FriendPresence, PresenceShow, WebSocketLike } from './xmpp.js';
 
 export const CONNECT_WEBSOCKET_URL = 'wss://connect.epicgames.dev/';
 export const CONNECT_SUBPROTOCOL = 'stomp';
@@ -74,7 +74,11 @@ export interface ConnectEventMap {
   error: Error;
 }
 
-function resolveConnectWebSocketFactory(factory?: ConnectWebSocketFactory): ConnectWebSocketFactory {
+const HEADERLESS_FACTORY = Symbol('headerlessConnectFactory');
+
+type BrandedFactory = ConnectWebSocketFactory & { [HEADERLESS_FACTORY]?: boolean };
+
+function resolveConnectWebSocketFactory(factory?: ConnectWebSocketFactory): BrandedFactory {
   if (factory) return factory;
   const globalWebSocket = (globalThis as { WebSocket?: unknown }).WebSocket;
   if (typeof globalWebSocket !== 'function') {
@@ -83,12 +87,107 @@ function resolveConnectWebSocketFactory(factory?: ConnectWebSocketFactory): Conn
       'webSocket',
     );
   }
-  return (url, protocols) =>
+  const fallback: BrandedFactory = (url, protocols) =>
     new (globalWebSocket as new (url: string, protocols?: string | string[]) => WebSocketLike)(url, protocols);
+  fallback[HEADERLESS_FACTORY] = true;
+  return fallback;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+}
+
+function decodeEosProp(value: unknown): unknown {
+  if (typeof value !== 'string' || value.length === 0) return value;
+  const tag = value[0];
+  const rest = value.slice(1);
+  switch (tag) {
+    case 'i': {
+      const parsed = Number.parseInt(rest, 10);
+      return Number.isNaN(parsed) ? value : parsed;
+    }
+    case 'b':
+      return rest === 'true';
+    case 's':
+      return rest;
+    case 'm':
+      try {
+        return JSON.parse(rest);
+      } catch {
+        return rest;
+      }
+    default:
+      return value;
+  }
+}
+
+export function decodeEosProps(props: Record<string, unknown>): Record<string, unknown> {
+  const decoded: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(props)) {
+    decoded[key] = key.startsWith('EOS_') ? value : decodeEosProp(value);
+  }
+  return decoded;
+}
+
+function showFromStatus(status: string): PresenceShow | null {
+  switch (status) {
+    case 'away':
+      return 'away';
+    case 'extendedaway':
+    case 'xa':
+      return 'xa';
+    case 'dnd':
+      return 'dnd';
+    default:
+      return null;
+  }
+}
+
+export function normalizeConnectPresence(payload: Record<string, unknown>): FriendPresence | null {
+  const accountId = typeof payload['accountId'] === 'string' ? (payload['accountId'] as string) : '';
+  if (!accountId) return null;
+
+  const rawStatus = typeof payload['status'] === 'string' ? (payload['status'] as string) : '';
+  const statusIsJson = rawStatus.trimStart().startsWith('{');
+  const topStatus = statusIsJson ? '' : rawStatus.toLowerCase();
+  const available = topStatus.length === 0 ? true : topStatus !== 'offline';
+
+  const perNsValues = Object.values(asRecord(payload['perNamespaceStatus']));
+  const perNs = perNsValues.length > 0 ? asRecord(perNsValues[0]) : {};
+
+  let statusText: string | null = null;
+  if (typeof perNs['status'] === 'string') {
+    statusText = perNs['status'] as string;
+  } else if (statusIsJson) {
+    statusText = rawStatus;
+  } else {
+    const activity = asRecord(payload['activity']);
+    if (typeof activity['value'] === 'string') statusText = activity['value'] as string;
+  }
+
+  let status: FortniteStatus | null = null;
+  if (statusText) {
+    try {
+      const parsed = JSON.parse(statusText) as FortniteStatus;
+      if (parsed && typeof parsed === 'object') status = parsed;
+    } catch {
+      status = null;
+    }
+  }
+
+  return {
+    accountId,
+    jid: accountId,
+    resource: null,
+    platform: null,
+    available,
+    show: showFromStatus(topStatus),
+    statusText,
+    status,
+    playing: Boolean(status?.bIsPlaying),
+    joinable: Boolean(status?.bIsJoinable),
+    receivedAt: new Date().toISOString(),
+  };
 }
 
 function stripPartyPrefix(conversationId: string | null): string | null {
@@ -107,6 +206,7 @@ export class ConnectClient extends TypedEmitter<ConnectEventMap> {
   private currentState: ConnectState = 'idle';
   private connectionId: string | null = null;
   private heartbeatStarted = false;
+  private readonly presenceCache = new Map<string, FriendPresence>();
 
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -124,7 +224,14 @@ export class ConnectClient extends TypedEmitter<ConnectEventMap> {
       throw new ValidationError('A connect client requires a getAccessToken function.', 'getAccessToken');
     }
     this.options = options;
-    this.factory = resolveConnectWebSocketFactory(options.webSocket);
+    const factory = resolveConnectWebSocketFactory(options.webSocket);
+    if ((factory as BrandedFactory)[HEADERLESS_FACTORY]) {
+      throw new ConfigurationError(
+        'The connect (EOS) stream requires a WebSocket that can send an Authorization header, which browser and global WebSocket implementations cannot. Pass a `webSocket` factory backed by the "ws" package (Node and Electron main) or the Tauri websocket plugin. Live friend presence is still available without a socket through session.friendPresences().',
+        'webSocket',
+      );
+    }
+    this.factory = factory;
     this.url = options.url ?? CONNECT_WEBSOCKET_URL;
     this.connectionTimeoutMs = options.connectionTimeoutMs ?? 15_000;
     this.autoReconnect = options.autoReconnect ?? true;
@@ -144,6 +251,14 @@ export class ConnectClient extends TypedEmitter<ConnectEventMap> {
 
   get connection(): string | null {
     return this.connectionId;
+  }
+
+  get presences(): ReadonlyMap<string, FriendPresence> {
+    return this.presenceCache;
+  }
+
+  getPresence(accountId: string): FriendPresence | null {
+    return this.presenceCache.get(accountId) ?? null;
   }
 
   async connect(): Promise<void> {
@@ -166,7 +281,7 @@ export class ConnectClient extends TypedEmitter<ConnectEventMap> {
 
     let socket: WebSocketLike;
     try {
-      socket = this.factory(this.url, undefined, {
+      socket = this.factory(this.url, CONNECT_SEC_PROTOCOLS.split(','), {
         headers: {
           Authorization: `Bearer ${token}`,
           'Epic-Connect-Protocol': 'stomp',
@@ -310,6 +425,14 @@ export class ConnectClient extends TypedEmitter<ConnectEventMap> {
       const payload = asRecord(body['payload']);
       const accountId = typeof payload['accountId'] === 'string' ? (payload['accountId'] as string) : '';
       if (!accountId) return;
+      const normalized = normalizeConnectPresence(payload);
+      if (normalized) {
+        if (normalized.available) {
+          this.presenceCache.set(accountId, normalized);
+        } else {
+          this.presenceCache.delete(accountId);
+        }
+      }
       this.emit('presence', { accountId, payload, receivedAt: new Date().toISOString() });
     }
   }

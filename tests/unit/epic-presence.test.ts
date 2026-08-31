@@ -53,4 +53,29 @@ describe('PresenceManager', () => {
     expect(await captureThrow(() => presence.lastOnline('AT', ''))).toBeInstanceOf(ValidationError);
     expect(mock.calls).toBe(0);
   });
+
+  it('fetches the bulk friends presence snapshot', async () => {
+    const rows = [
+      { accountId: 'friend-1', status: 'online' },
+      { accountId: 'friend-2', status: 'away' },
+    ];
+    const { mock, presence } = setup({ body: rows });
+    const result = await presence.friendsPresence('AT', 'ME');
+    const request = mock.lastRequest();
+    expect(request.method).toBe('GET');
+    expect(request.path).toBe('/presence/api/v1/_/friends/ME');
+    expect(request.headers['authorization']).toBe('Bearer AT');
+    expect(result).toEqual(rows);
+  });
+
+  it('coerces a non-array bulk presence body to an empty list', async () => {
+    const { presence } = setup({ body: {} });
+    expect(await presence.friendsPresence('AT', 'ME')).toEqual([]);
+  });
+
+  it('rejects a blank account id for the bulk snapshot without a request', async () => {
+    const { mock, presence } = setup();
+    expect(await captureThrow(() => presence.friendsPresence('AT', ''))).toBeInstanceOf(ValidationError);
+    expect(mock.calls).toBe(0);
+  });
 });

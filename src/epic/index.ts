@@ -183,7 +183,7 @@ export type {
 } from './habanero.js';
 
 export { PresenceManager, PRESENCE_BASE_URL, PRESENCE_NAMESPACE } from './presence.js';
-export type { LastOnlineEntry, LastOnlineResponse, PresenceOptions } from './presence.js';
+export type { FriendPresenceRow, LastOnlineEntry, LastOnlineResponse, PresenceOptions } from './presence.js';
 
 export {
   LightswitchManager,
@@ -424,6 +424,8 @@ export {
   CONNECT_WEBSOCKET_URL,
   CONNECT_SUBPROTOCOL,
   CONNECT_SEC_PROTOCOLS,
+  normalizeConnectPresence,
+  decodeEosProps,
 } from './connect.js';
 export type {
   ConnectState,

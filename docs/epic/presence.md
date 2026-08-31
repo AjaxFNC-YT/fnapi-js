@@ -44,6 +44,32 @@ Convenience wrapper that pulls the first entry for the requested account out of 
 
 **Session:** `session.lastOnlineFor(accountId?)`
 
+## presence.friendsPresence
+<Badge type="info" text="method" />
+
+```ts
+friendsPresence(accessToken: string, accountId: string, options?: { signal?: AbortSignal }): Promise<FriendPresenceRow[]>
+```
+
+Reads the **bulk friends-presence snapshot** — the current presence of every friend in one REST call (`GET /presence/api/v1/_/friends/{accountId}`). Non-array bodies coerce to `[]`.
+
+**Returns:** `Promise<FriendPresenceRow[]>` · **Session:** `session.friendsPresence(options?)` — always reads the signed-in account.
+
+### session.friendPresences
+<Badge type="info" text="method" />
+
+```ts
+friendPresences(options?: { signal?: AbortSignal }): Promise<FriendPresence[]>
+```
+
+The ergonomic view. Merges three wires — the REST snapshot above, the live EOS connect stream, and the legacy XMPP presence cache — into one normalized `FriendPresence[]`, last-writer-wins by `receivedAt`. It returns immediately from the REST snapshot even before a realtime socket is connected, and live streams (when a [`LiveClient`](./live.md) is running) refine it as updates arrive.
+
+```ts
+for (const p of await session.friendPresences()) {
+  console.log(`${p.accountId} — ${p.show ?? 'online'} — ${p.statusText ?? ''}`);
+}
+```
+
 ## Types
 <Badge type="tip" text="interface" />
 
@@ -58,6 +84,16 @@ type LastOnlineResponse = Record<string, LastOnlineEntry[]>;
 interface PresenceOptions {
   namespace?: string;
   signal?: AbortSignal;
+}
+
+interface FriendPresenceRow {
+  accountId: string;
+  namespace?: string;
+  lastOnline?: string;
+  status?: string;
+  activity?: unknown;
+  props?: Record<string, unknown>;
+  [key: string]: unknown;
 }
 ```
 
