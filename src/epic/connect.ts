@@ -143,6 +143,15 @@ function showFromStatus(status: string): PresenceShow | null {
   }
 }
 
+function coercePresenceBool(value: unknown): boolean {
+  return value === true || value === 'true';
+}
+
+function readPresencePlatform(props: Record<string, unknown>): string | null {
+  const platform = props['EOS_Platform'];
+  return typeof platform === 'string' && platform.length > 0 ? platform : null;
+}
+
 export function normalizeConnectPresence(payload: Record<string, unknown>): FriendPresence | null {
   const accountId = typeof payload['accountId'] === 'string' ? (payload['accountId'] as string) : '';
   if (!accountId) return null;
@@ -152,21 +161,21 @@ export function normalizeConnectPresence(payload: Record<string, unknown>): Frie
   const topStatus = statusIsJson ? '' : rawStatus.toLowerCase();
   const available = topStatus.length === 0 ? true : topStatus !== 'offline';
 
-  const perNsValues = Object.values(asRecord(payload['perNamespaceStatus']));
-  const perNs = perNsValues.length > 0 ? asRecord(perNsValues[0]) : {};
+  const perNsList = Array.isArray(payload['perNs']) ? (payload['perNs'] as unknown[]) : [];
+  const perNs = perNsList.length > 0 ? asRecord(perNsList[0]) : {};
+  const perNsProps = decodeEosProps(asRecord(perNs['props']));
+  const activity = asRecord(perNs['activity'] ?? payload['activity']);
+  const nsStatus = typeof perNs['status'] === 'string' ? (perNs['status'] as string).toLowerCase() : '';
 
   let statusText: string | null = null;
-  if (typeof perNs['status'] === 'string') {
-    statusText = perNs['status'] as string;
+  if (typeof activity['value'] === 'string' && (activity['value'] as string).length > 0) {
+    statusText = activity['value'] as string;
   } else if (statusIsJson) {
     statusText = rawStatus;
-  } else {
-    const activity = asRecord(payload['activity']);
-    if (typeof activity['value'] === 'string') statusText = activity['value'] as string;
   }
 
   let status: FortniteStatus | null = null;
-  if (statusText) {
+  if (statusText && statusText.trimStart().startsWith('{')) {
     try {
       const parsed = JSON.parse(statusText) as FortniteStatus;
       if (parsed && typeof parsed === 'object') status = parsed;
@@ -179,13 +188,13 @@ export function normalizeConnectPresence(payload: Record<string, unknown>): Frie
     accountId,
     jid: accountId,
     resource: null,
-    platform: null,
+    platform: readPresencePlatform(perNsProps),
     available,
-    show: showFromStatus(topStatus),
+    show: showFromStatus(nsStatus || topStatus),
     statusText,
     status,
-    playing: Boolean(status?.bIsPlaying),
-    joinable: Boolean(status?.bIsJoinable),
+    playing: status?.bIsPlaying ?? coercePresenceBool(perNsProps['bIsPlaying']),
+    joinable: status?.bIsJoinable ?? coercePresenceBool(perNsProps['bIsJoinable']),
     receivedAt: new Date().toISOString(),
   };
 }

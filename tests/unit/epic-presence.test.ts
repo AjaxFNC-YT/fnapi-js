@@ -59,11 +59,17 @@ describe('PresenceManager', () => {
       { accountId: 'friend-1', status: 'online' },
       { accountId: 'friend-2', status: 'away' },
     ];
-    const { mock, presence } = setup({ body: rows });
+    const { mock, presence } = setup({
+      body: [
+        { circle: 'self', presences: [{ accountId: 'ME', status: 'online' }] },
+        { circle: 'friends', presences: rows },
+      ],
+    });
     const result = await presence.friendsPresence('AT', 'ME');
     const request = mock.lastRequest();
     expect(request.method).toBe('GET');
-    expect(request.path).toBe('/presence/api/v1/_/friends/ME');
+    expect(request.path).toBe('/presence/api/v1/_/ME/presence');
+    expect(request.query.get('circle')).toBe('friends');
     expect(request.headers['authorization']).toBe('Bearer AT');
     expect(result).toEqual(rows);
   });

@@ -5,6 +5,8 @@ export const AVATAR_BASE_URL = 'https://avatar-service-prod.identity.live.on.epi
 
 export const AVATAR_ICON_BASE_URL = 'https://fortnite-api.com/images/cosmetics/br';
 
+export const FNCC_AVATAR_ICON_BASE_URL = 'https://cdn.fn-api.cc/cosmetics/br';
+
 export const AVATAR_CHARACTER_NAMESPACE = 'ATHENACHARACTER:';
 
 export const AvatarIconSize = {
@@ -21,6 +23,23 @@ export function isAvatarIconSize(value: unknown): value is AvatarIconSize {
   return typeof value === 'string' && AVATAR_ICON_SIZE_LIST.includes(value as AvatarIconSize);
 }
 
+export const AvatarImageSource = {
+  Fncc: 'fncc',
+  FortniteApi: 'fortnite-api',
+} as const;
+
+export type AvatarImageSource = (typeof AvatarImageSource)[keyof typeof AvatarImageSource];
+
+export const AVATAR_IMAGE_SOURCE_LIST = Object.values(AvatarImageSource);
+
+export const DEFAULT_AVATAR_IMAGE_SOURCE: AvatarImageSource = AvatarImageSource.Fncc;
+
+export function isAvatarImageSource(value: unknown): value is AvatarImageSource {
+  return (
+    typeof value === 'string' && AVATAR_IMAGE_SOURCE_LIST.includes(value as AvatarImageSource)
+  );
+}
+
 export interface AvatarEntry {
   accountId: string;
   avatarId: string;
@@ -29,7 +48,9 @@ export interface AvatarEntry {
 
 export interface ResolvedAvatar extends AvatarEntry {
   characterId: string | null;
+  source: AvatarImageSource;
   iconUrl: string | null;
+  iconUrls: Record<AvatarImageSource, string | null>;
 }
 
 export interface AvatarOptions {
@@ -38,6 +59,18 @@ export interface AvatarOptions {
 
 export interface AvatarResolveOptions extends AvatarOptions {
   size?: AvatarIconSize;
+  source?: AvatarImageSource;
+}
+
+export type AvatarImageResolver = (
+  characterId: string,
+  size: AvatarIconSize,
+  options?: AvatarOptions,
+) => Promise<string | null>;
+
+export interface AvatarManagerOptions {
+  source?: AvatarImageSource;
+  imageResolver?: AvatarImageResolver;
 }
 
 function requireString(value: unknown, parameter: string): string {
@@ -62,17 +95,51 @@ export function extractCharacterId(avatarId: string): string | null {
   return characterId.length > 0 ? characterId : null;
 }
 
-export function buildIconUrl(
-  avatarId: string,
-  size: AvatarIconSize = AvatarIconSize.SmallIcon,
-): string | null {
-  const characterId = extractCharacterId(avatarId);
-  if (!characterId) return null;
+function buildIconUrlFromCharacterId(
+  characterId: string,
+  size: AvatarIconSize,
+  source: AvatarImageSource,
+): string {
+  if (source === AvatarImageSource.Fncc) {
+    const fnccSize = size === AvatarIconSize.Featured ? AvatarIconSize.Icon : size;
+    return `${FNCC_AVATAR_ICON_BASE_URL}/${characterId}/${fnccSize}.png`;
+  }
   return `${AVATAR_ICON_BASE_URL}/${characterId}/${size}.png`;
 }
 
+export function buildIconUrl(
+  avatarId: string,
+  size: AvatarIconSize = AvatarIconSize.SmallIcon,
+  source: AvatarImageSource = DEFAULT_AVATAR_IMAGE_SOURCE,
+): string | null {
+  const characterId = extractCharacterId(avatarId);
+  if (!characterId) return null;
+  return buildIconUrlFromCharacterId(characterId, size, source);
+}
+
+export function buildIconUrls(
+  avatarId: string,
+  size: AvatarIconSize = AvatarIconSize.SmallIcon,
+): Record<AvatarImageSource, string | null> {
+  const characterId = extractCharacterId(avatarId);
+  const urls = {} as Record<AvatarImageSource, string | null>;
+  for (const source of AVATAR_IMAGE_SOURCE_LIST) {
+    urls[source] = characterId ? buildIconUrlFromCharacterId(characterId, size, source) : null;
+  }
+  return urls;
+}
+
 export class AvatarManager {
-  constructor(private readonly rest: EpicRestClient) {}
+  private readonly defaultSource: AvatarImageSource;
+  private readonly imageResolver: AvatarImageResolver | null;
+
+  constructor(
+    private readonly rest: EpicRestClient,
+    options?: AvatarManagerOptions,
+  ) {
+    this.defaultSource = options?.source ?? DEFAULT_AVATAR_IMAGE_SOURCE;
+    this.imageResolver = options?.imageResolver ?? null;
+  }
 
   async get(
     accessToken: string,
@@ -109,8 +176,9 @@ export class AvatarManager {
     options?: AvatarResolveOptions,
   ): Promise<ResolvedAvatar[]> {
     const size = options?.size ?? AvatarIconSize.SmallIcon;
+    const source = options?.source ?? this.defaultSource;
     const entries = await this.get(accessToken, accountIds, options);
-    return entries.map((entry) => this.resolveEntry(entry, size));
+    return Promise.all(entries.map((entry) => this.resolveEntryLive(entry, size, source, options)));
   }
 
   async resolveFor(
@@ -120,18 +188,59 @@ export class AvatarManager {
   ): Promise<ResolvedAvatar | null> {
     const entry = await this.getFor(accessToken, accountId, options);
     if (!entry) return null;
-    return this.resolveEntry(entry, options?.size ?? AvatarIconSize.SmallIcon);
+    return this.resolveEntryLive(
+      entry,
+      options?.size ?? AvatarIconSize.SmallIcon,
+      options?.source ?? this.defaultSource,
+      options,
+    );
   }
 
-  resolveEntry(entry: AvatarEntry, size: AvatarIconSize = AvatarIconSize.SmallIcon): ResolvedAvatar {
+  resolveEntry(
+    entry: AvatarEntry,
+    size: AvatarIconSize = AvatarIconSize.SmallIcon,
+    source: AvatarImageSource = this.defaultSource,
+  ): ResolvedAvatar {
     return {
       ...entry,
       characterId: extractCharacterId(entry.avatarId),
-      iconUrl: buildIconUrl(entry.avatarId, size),
+      source,
+      iconUrl: buildIconUrl(entry.avatarId, size, source),
+      iconUrls: buildIconUrls(entry.avatarId, size),
     };
   }
 
-  resolveIconUrl(avatarId: string, size: AvatarIconSize = AvatarIconSize.SmallIcon): string | null {
-    return buildIconUrl(avatarId, size);
+  private async resolveEntryLive(
+    entry: AvatarEntry,
+    size: AvatarIconSize,
+    source: AvatarImageSource,
+    options?: AvatarOptions,
+  ): Promise<ResolvedAvatar> {
+    const resolved = this.resolveEntry(entry, size, source);
+    if (source !== AvatarImageSource.Fncc || !this.imageResolver || !resolved.characterId) {
+      return resolved;
+    }
+    const liveUrl = await this.imageResolver(resolved.characterId, size, options);
+    if (!liveUrl) return resolved;
+    return {
+      ...resolved,
+      iconUrl: liveUrl,
+      iconUrls: { ...resolved.iconUrls, [AvatarImageSource.Fncc]: liveUrl },
+    };
+  }
+
+  resolveIconUrl(
+    avatarId: string,
+    size: AvatarIconSize = AvatarIconSize.SmallIcon,
+    source: AvatarImageSource = this.defaultSource,
+  ): string | null {
+    return buildIconUrl(avatarId, size, source);
+  }
+
+  resolveIconUrls(
+    avatarId: string,
+    size: AvatarIconSize = AvatarIconSize.SmallIcon,
+  ): Record<AvatarImageSource, string | null> {
+    return buildIconUrls(avatarId, size);
   }
 }

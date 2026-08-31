@@ -203,18 +203,24 @@ describe('ConnectClient', () => {
         type: 'presence.v1.UPDATE',
         payload: {
           accountId: 'friend-3',
-          status: 'online',
-          perNamespaceStatus: {
-            Fortnite: { status: '{"Status":"Battle Royale Lobby","bIsPlaying":true,"bIsJoinable":true}' },
-          },
+          status: 'away',
+          perNs: [
+            {
+              status: 'away',
+              activity: { value: 'Battle Royale Lobby' },
+              props: { bIsPlaying: 'true', bIsJoinable: 'true', EOS_Platform: 'WIN' },
+            },
+          ],
         },
       }),
     );
     const presence = client.getPresence('friend-3');
     expect(presence?.available).toBe(true);
+    expect(presence?.show).toBe('away');
     expect(presence?.playing).toBe(true);
     expect(presence?.joinable).toBe(true);
-    expect(presence?.status?.Status).toBe('Battle Royale Lobby');
+    expect(presence?.statusText).toBe('Battle Royale Lobby');
+    expect(presence?.platform).toBe('WIN');
     expect([...client.presences.keys()]).toEqual(['friend-3']);
     await client.disconnect();
   });

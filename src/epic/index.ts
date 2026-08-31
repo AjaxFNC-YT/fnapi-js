@@ -183,7 +183,13 @@ export type {
 } from './habanero.js';
 
 export { PresenceManager, PRESENCE_BASE_URL, PRESENCE_NAMESPACE } from './presence.js';
-export type { FriendPresenceRow, LastOnlineEntry, LastOnlineResponse, PresenceOptions } from './presence.js';
+export type {
+  FriendPresenceRow,
+  LastOnlineEntry,
+  LastOnlineResponse,
+  PresenceCircle,
+  PresenceOptions,
+} from './presence.js';
 
 export {
   LightswitchManager,
@@ -254,18 +260,26 @@ export {
   AvatarManager,
   AVATAR_BASE_URL,
   AVATAR_ICON_BASE_URL,
+  FNCC_AVATAR_ICON_BASE_URL,
   AVATAR_CHARACTER_NAMESPACE,
   AvatarIconSize,
   AVATAR_ICON_SIZE_LIST,
   isAvatarIconSize,
+  AvatarImageSource,
+  AVATAR_IMAGE_SOURCE_LIST,
+  DEFAULT_AVATAR_IMAGE_SOURCE,
+  isAvatarImageSource,
   extractCharacterId,
   buildIconUrl,
+  buildIconUrls,
 } from './avatar.js';
 export type {
   AvatarEntry,
   ResolvedAvatar,
   AvatarOptions,
   AvatarResolveOptions,
+  AvatarManagerOptions,
+  AvatarImageResolver,
 } from './avatar.js';
 
 export { CloudStorageManager, CLOUDSTORAGE_CONTENT_TYPE } from './cloudstorage.js';

@@ -14,12 +14,14 @@ export type LastOnlineResponse = Record<string, LastOnlineEntry[]>;
 
 export interface FriendPresenceRow {
   accountId: string;
-  namespace?: string;
-  lastOnline?: string;
   status?: string;
-  activity?: unknown;
-  props?: Record<string, unknown>;
+  perNs?: unknown[];
   [key: string]: unknown;
+}
+
+export interface PresenceCircle {
+  circle?: string;
+  presences?: FriendPresenceRow[];
 }
 
 export interface PresenceOptions {
@@ -79,14 +81,21 @@ export class PresenceManager {
   ): Promise<FriendPresenceRow[]> {
     requireString(accessToken, 'accessToken');
     requireString(accountId, 'accountId');
-    const response = await this.rest.request<FriendPresenceRow[]>(
+    const response = await this.rest.request<PresenceCircle[]>(
       'GET',
-      `/presence/api/v1/_/friends/${encodeURIComponent(accountId)}`,
+      `/presence/api/v1/_/${encodeURIComponent(accountId)}/presence`,
       {
         bearer: accessToken,
+        query: { circle: 'friends' },
         ...(options?.signal ? { signal: options.signal } : {}),
       },
     );
-    return Array.isArray(response.data) ? response.data : [];
+    const circles = Array.isArray(response.data) ? response.data : [];
+    const rows: FriendPresenceRow[] = [];
+    for (const circle of circles) {
+      if (!circle || circle.circle === 'self') continue;
+      if (Array.isArray(circle.presences)) rows.push(...circle.presences);
+    }
+    return rows;
   }
 }

@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import {
+  AvatarIconSize,
   CosmeticSearchBuilder,
   CosmeticType,
   DillyAPI,
@@ -22,6 +23,7 @@ import {
   type ConnectFriendMessage,
   type ConnectPartyMessage,
   type ConnectPresenceUpdate,
+  type EpicAccount,
   type EpicAuthSession,
   type FriendPresence,
   type JamPartValue,
@@ -65,9 +67,20 @@ const fortnite = new FortniteAPI({
   ...(language ? { language } : {}),
   cache: { enabled: true, ttl: 300_000 },
 });
-const epic = new EpicGamesClient();
 const dilly = new DillyAPI();
 const fncc = new FnccAPI();
+const epic = new EpicGamesClient({
+  avatarImageResolver: async (characterId, size) => {
+    try {
+      const cosmetic = await fncc.cosmetics.get('br', characterId);
+      const images = cosmetic.images ?? {};
+      if (size === AvatarIconSize.SmallIcon) return images.smallIcon ?? images.icon ?? null;
+      return images.icon ?? images.smallIcon ?? null;
+    } catch {
+      return null;
+    }
+  },
+});
 const rl = createInterface({ input, output });
 
 let session: EpicAuthSession | null = null;
@@ -1019,12 +1032,18 @@ async function libraryCollectionItemsView(): Promise<void> {
 async function avatarView(): Promise<void> {
   const active = await getSession();
   const id = await ask('account id (blank = you): ');
-  const avatar = await active.avatar(id || undefined);
-  if (!avatar) {
+  const resolved = await active.resolveAvatar(id || undefined, { size: AvatarIconSize.Icon });
+  if (!resolved) {
     console.log('no avatar record');
     return;
   }
-  console.log(preview(avatar, 300));
+  console.log(`avatarId:    ${resolved.avatarId}`);
+  console.log(`characterId: ${resolved.characterId ?? 'none'}`);
+  console.log(`source:      ${resolved.source}`);
+  console.log(`iconUrl:     ${resolved.iconUrl ?? 'none'}`);
+  for (const [source, url] of Object.entries(resolved.iconUrls)) {
+    console.log(`  ${source.padEnd(12)} ${url ?? 'none'}`);
+  }
 }
 
 async function matchmakingSessions(): Promise<void> {
@@ -1055,15 +1074,17 @@ async function socialBanCheck(): Promise<void> {
   console.log(preview(status, 300));
 }
 
-function describePresence(presence: FriendPresence): string {
-  const state = presence.available ? 'online' : 'offline';
+function describePresence(presence: FriendPresence, name?: string): string {
+  const who = name ? `${name} (${presence.accountId})` : presence.accountId;
+  const state = presence.available ? presence.show ?? 'online' : 'offline';
   const platform = presence.platform ? ` [${presence.platform}]` : '';
-  const text = presence.status?.Status ? ` — ${presence.status.Status}` : '';
+  const statusText = presence.statusText ?? presence.status?.Status;
+  const text = statusText ? ` — ${statusText}` : '';
   const flags = [presence.playing ? 'playing' : null, presence.joinable ? 'joinable' : null]
     .filter(Boolean)
     .join(', ');
   const flagText = flags ? ` (${flags})` : '';
-  return `${presence.accountId}  ${state}${platform}${text}${flagText}`;
+  return `${who}  ${state}${platform}${text}${flagText}`;
 }
 
 async function xmppConnectWatch(): Promise<void> {
@@ -1106,13 +1127,26 @@ async function xmppConnectWatch(): Promise<void> {
 
 async function xmppListPresences(): Promise<void> {
   const active = await getSession();
+  const client = await active.connectEvents({ webSocket: connectWsFactory as never });
+  if (client.presences.size === 0) {
+    console.log('opened EOS stream — collecting friend presence...');
+    await new Promise((resolve) => setTimeout(resolve, 4000));
+  }
   const presences = await active.friendPresences();
   if (presences.length === 0) {
-    console.log('no cached presences yet — run "connect & watch" first to populate');
+    console.log('no friends currently online');
     return;
   }
+  let names = new Map<string, EpicAccount>();
+  try {
+    names = await active.resolveAccounts(presences.map((presence) => presence.accountId));
+  } catch {
+    names = new Map();
+  }
   console.log(`${presences.length} friends online:`);
-  for (const presence of presences) console.log(`  ${describePresence(presence)}`);
+  for (const presence of presences) {
+    console.log(`  ${describePresence(presence, names.get(presence.accountId)?.displayName)}`);
+  }
 }
 
 async function xmppSendMessage(): Promise<void> {

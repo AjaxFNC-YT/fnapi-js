@@ -29,6 +29,7 @@ import { PRESENCE_BASE_URL, PresenceManager } from './presence.js';
 import { STATS_PROXY_BASE_URL, StatsProxyManager } from './stats.js';
 import { USER_SEARCH_BASE_URL, UserSearchManager } from './userSearch.js';
 import { AVATAR_BASE_URL, AvatarManager } from './avatar.js';
+import type { AvatarImageResolver } from './avatar.js';
 import { CloudStorageManager } from './cloudstorage.js';
 import { MatchmakingManager } from './matchmaking.js';
 import { PLAYTIME_BASE_URL, PlaytimeManager } from './playtime.js';
@@ -47,6 +48,7 @@ export interface EpicClientOptions extends EpicRestOptions {
   defaultClient?: AuthClientInput;
   allowCustomClients?: boolean;
   allowCustomMcpOperations?: boolean;
+  avatarImageResolver?: AvatarImageResolver;
 }
 
 export class EpicGamesClient {
@@ -98,7 +100,13 @@ export class EpicGamesClient {
   private readonly allowCustomClients: boolean;
 
   constructor(options: EpicClientOptions = {}) {
-    const { defaultClient, allowCustomClients, allowCustomMcpOperations, ...restOptions } = options;
+    const {
+      defaultClient,
+      allowCustomClients,
+      allowCustomMcpOperations,
+      avatarImageResolver,
+      ...restOptions
+    } = options;
     this.allowCustomClients = allowCustomClients ?? false;
     this.rest = new EpicRestClient(restOptions);
     this.mcpRest = new EpicRestClient({ ...restOptions, baseUrl: MCP_BASE_URL });
@@ -144,7 +152,10 @@ export class EpicGamesClient {
     this.game = new FortniteGameManager(this.mcpRest, this.mcp);
     this.userSearch = new UserSearchManager(this.userSearchRest, this.accounts);
     this.ecosystem = new EcosystemEndpoint(this.ecosystemRest);
-    this.avatar = new AvatarManager(this.avatarRest);
+    this.avatar = new AvatarManager(
+      this.avatarRest,
+      avatarImageResolver ? { imageResolver: avatarImageResolver } : undefined,
+    );
     this.cloudStorage = new CloudStorageManager(this.mcpRest);
     this.matchmaking = new MatchmakingManager(this.mcpRest);
     this.playtime = new PlaytimeManager(this.playtimeRest);

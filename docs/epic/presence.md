@@ -51,7 +51,11 @@ Convenience wrapper that pulls the first entry for the requested account out of 
 friendsPresence(accessToken: string, accountId: string, options?: { signal?: AbortSignal }): Promise<FriendPresenceRow[]>
 ```
 
-Reads the **bulk friends-presence snapshot** — the current presence of every friend in one REST call (`GET /presence/api/v1/_/friends/{accountId}`). Non-array bodies coerce to `[]`.
+Reads the **bulk friends-presence snapshot** — the current presence of every friend in one REST call (`GET /presence/api/v1/_/{accountId}/presence?circle=friends`). The service returns presence grouped into `self` / `friends` circles; this flattens the friends circle into a flat `FriendPresenceRow[]`. Non-array bodies coerce to `[]`.
+
+::: warning Requires a `presence` READ scope
+This endpoint needs the `presence:_:{accountId} READ` permission, which the Fortnite game clients (`fortniteAndroid`, `fortniteNewSwitch`, …) are **not** granted — the call returns `403` for them, and `friendPresences()` silently treats that as an empty snapshot. Live friend presence for those clients comes from the EOS connect stream instead (below); this REST snapshot is only useful with a token that actually holds the scope.
+:::
 
 **Returns:** `Promise<FriendPresenceRow[]>` · **Session:** `session.friendsPresence(options?)` — always reads the signed-in account.
 
@@ -62,9 +66,13 @@ Reads the **bulk friends-presence snapshot** — the current presence of every f
 friendPresences(options?: { signal?: AbortSignal }): Promise<FriendPresence[]>
 ```
 
-The ergonomic view. Merges three wires — the REST snapshot above, the live EOS connect stream, and the legacy XMPP presence cache — into one normalized `FriendPresence[]`, last-writer-wins by `receivedAt`. It returns immediately from the REST snapshot even before a realtime socket is connected, and live streams (when a [`LiveClient`](./live.md) is running) refine it as updates arrive.
+The ergonomic view. Merges three wires — the REST snapshot above, the live EOS connect stream, and the legacy XMPP presence cache — into one normalized `FriendPresence[]`, last-writer-wins by `receivedAt`.
+
+Because the REST snapshot `403`s on the Fortnite clients, the **reliable source is the EOS connect stream** — so connect it first (via [`session.connectEvents()`](./chat) or a [`LiveClient`](./live.md)) and let a moment pass for the initial `presence.v1.UPDATE` frames to arrive. Calling `friendPresences()` cold, before any stream is up, returns an empty list on those clients.
 
 ```ts
+await session.connectEvents({ webSocket: factory }); // ws-backed factory on Node
+await new Promise((r) => setTimeout(r, 3000));        // let presence frames land
 for (const p of await session.friendPresences()) {
   console.log(`${p.accountId} — ${p.show ?? 'online'} — ${p.statusText ?? ''}`);
 }
@@ -88,12 +96,14 @@ interface PresenceOptions {
 
 interface FriendPresenceRow {
   accountId: string;
-  namespace?: string;
-  lastOnline?: string;
   status?: string;
-  activity?: unknown;
-  props?: Record<string, unknown>;
+  perNs?: unknown[];
   [key: string]: unknown;
+}
+
+interface PresenceCircle {
+  circle?: string;
+  presences?: FriendPresenceRow[];
 }
 ```
 

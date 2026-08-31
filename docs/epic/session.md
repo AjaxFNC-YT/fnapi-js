@@ -581,9 +581,19 @@ resolveAvatar(accountId?: string, options?: AvatarResolveOptions): Promise<Resol
 
 Read the KWS/Epic **avatar** (the account's chosen Fortnite icon) for one or many accounts. `avatar`/`avatars` return the raw `namespace:id` reference; the `resolve*` variants additionally resolve the id into its `characterId` and a rendered `iconUrl`. `avatar`/`resolveAvatar` default to the signed-in account and return `null` when none is set.
 
+Two sources are supported: `fncc` (**fn-api.cc**, the default) and `fortnite-api` (**fortnite-api.com**). Pick one per call with `options.source`; the resolved value also carries every source's URL in `iconUrls` so you can fall back client-side. `options.size` is `smallicon` (default), `icon`, or `featured` — `fncc` serves the character icon only, never a full render.
+
+When you construct the SDK through the umbrella `Fortnite` client, the default `fncc` source reads the cosmetic's real `images` object from fn-api.cc, so the resolved `iconUrl` is the exact CDN link the API reports and degrades to `smallicon` when a skin has no `icon`. Used standalone (a bare `EpicGamesClient`, or `fortnite-api` as the source), the icon URL is built directly from the skin id against the CDN with no extra request. Pass your own `avatarImageResolver` to `EpicGamesClient` to override the lookup.
+
 ```ts
 const me = await session.resolveAvatar();
-console.log(me?.avatarId, me?.characterId, me?.iconUrl);
+console.log(me?.avatarId, me?.characterId, me?.source, me?.iconUrl);
+console.log(me?.iconUrls['fncc'], me?.iconUrls['fortnite-api']);
+
+const large = await session.resolveAvatar(undefined, {
+  size: AvatarIconSize.Featured,
+  source: AvatarImageSource.FortniteApi,
+});
 ```
 
 ## Matchmaking
