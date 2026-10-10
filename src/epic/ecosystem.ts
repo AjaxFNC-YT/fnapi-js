@@ -1,5 +1,5 @@
 import { NotFoundError, ValidationError } from '../core/errors.js';
-import type { QueryParams, RequestOptions } from '../core/types.js';
+import type { QueryParams, RequestCacheOptions, RequestOptions } from '../core/types.js';
 import type { RestClient } from '../fortnite/rest.js';
 
 export const ECOSYSTEM_BASE_URL = 'https://api.fortnite.com/ecosystem/v1';
@@ -87,7 +87,7 @@ export type EcosystemDate = string | number | Date;
 export interface EcosystemBaseOptions {
   signal?: AbortSignal;
   timeout?: number;
-  cache?: boolean;
+  cache?: boolean | RequestCacheOptions;
   headers?: Record<string, string>;
 }
 

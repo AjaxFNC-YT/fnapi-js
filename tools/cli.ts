@@ -2,7 +2,6 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
-import WebSocket from 'ws';
 import {
   AvatarIconSize,
   CosmeticSearchBuilder,
@@ -12,8 +11,13 @@ import {
   FnccAPI,
   FortniteAPI,
   JamPart,
+  LauncherInstaller,
   Locker,
-  LockerCategory,
+  QuestBook,
+  QuestCatalog,
+  type QuestMode,
+  type Quest,
+  LOCKER_SLOTS,
   MatchMethod,
   MCPProfile,
   MTX_PLATFORM_LIST,
@@ -25,10 +29,15 @@ import {
   type ConnectPresenceUpdate,
   type EpicAccount,
   type EpicAuthSession,
+  type Tournament,
+  type Island,
   type FriendPresence,
   type JamPartValue,
-  type LockerCategoryValue,
-  type LockerVariantUpdate,
+  type LockerEquippedItem,
+  type LockerPreset,
+  type LockerSlotName,
+  type LockerVariantSelection,
+  type RankedStanding,
   type XmppMessage,
 } from '../src/index.js';
 
@@ -263,17 +272,37 @@ async function showLocker(): Promise<void> {
   const active = await getSession();
   const locker = new Locker(active, fortnite.cosmetics);
   const snapshot = await locker.fetch({ enrich: true });
+  const label = (slot: LockerEquippedItem | null): string => slot?.name ?? slot?.cosmeticId ?? 'none';
 
-  console.log(`${snapshot.items.length} cosmetics owned`);
-  const character = snapshot.loadout.character;
-  console.log(`equipped skin: ${character?.name ?? character?.cosmeticId ?? 'none'}`);
-  console.log(`  image: ${character?.imageUrl ?? '(none)'}`);
-
-  const favorites = snapshot.items.filter((item) => item.favorite);
-  console.log(`${favorites.length} favorited items`);
+  console.log(`${snapshot.items.length} cosmetics owned, ${snapshot.items.filter((item) => item.favorite).length} favorited`);
+  console.log(`skin ${label(snapshot.loadout.character)} | back ${label(snapshot.loadout.backpack)} | pickaxe ${label(snapshot.loadout.pickaxe)}`);
+  console.log(`glider ${label(snapshot.loadout.glider)} | contrail ${label(snapshot.loadout.contrail)} | shoes ${label(snapshot.loadout.shoes)}`);
+  console.log(`emotes ${snapshot.loadout.emotes.map(label).join(', ')}`);
+  console.log(`car ${label(snapshot.loadout.car.body)} | companion ${label(snapshot.loadout.companion)}`);
+  console.log(`presets: ${snapshot.presets.map((preset) => preset.name).join(', ') || 'none'}`);
 }
 
-const LOCKER_CATEGORIES = new Set<string>(Object.values(LockerCategory));
+const SLOT_BY_BACKEND: Record<string, LockerSlotName | 'emote' | 'wrap'> = {
+  AthenaCharacter: 'character',
+  AthenaBackpack: 'backpack',
+  AthenaPickaxe: 'pickaxe',
+  AthenaGlider: 'glider',
+  AthenaSkyDiveContrail: 'contrail',
+  AthenaLoadingScreen: 'loadingScreen',
+  AthenaMusicPack: 'lobbyMusic',
+  CosmeticShoes: 'shoes',
+  SparksAura: 'aura',
+  AthenaDance: 'emote',
+  AthenaItemWrap: 'wrap',
+};
+
+function parseVariants(input: string): LockerVariantSelection[] {
+  return input
+    .split(',')
+    .map((pair) => pair.split('=').map((part) => part.trim()))
+    .filter((pair): pair is [string, string] => pair.length === 2 && pair[0]!.length > 0 && pair[1]!.length > 0)
+    .map(([channel, variant]) => ({ channel, variant }));
+}
 
 async function editLocker(): Promise<void> {
   const active = await getSession();
@@ -281,133 +310,100 @@ async function editLocker(): Promise<void> {
   const name = await ask('cosmetic name to equip (skin/emote/wrap/etc): ');
   if (!name) return;
 
-  const cosmetic = await fortnite.cosmetics.find(
-    new CosmeticSearchBuilder().name(name).matchMethod(MatchMethod.Contains),
-  );
+  const cosmetic = await fortnite.cosmetics.find(new CosmeticSearchBuilder().name(name).matchMethod(MatchMethod.Contains));
   if (!cosmetic) {
     console.log(`no cosmetic matching "${name}"`);
     return;
   }
 
   const backend = cosmetic.type?.backendValue ?? '';
-  const category = backend.startsWith('Athena') ? backend.slice('Athena'.length) : backend;
-  if (!LOCKER_CATEGORIES.has(category)) {
+  const target = SLOT_BY_BACKEND[backend];
+  if (!target) {
     console.log(`"${cosmetic.name}" is a ${cosmetic.type?.displayValue ?? backend} — not an equippable locker slot`);
     return;
   }
 
-  let slotIndex = 0;
-  if (category === LockerCategory.dance) {
-    slotIndex = Number.parseInt(await ask('emote slot (0-5): '), 10);
-    if (!Number.isFinite(slotIndex)) slotIndex = 0;
-  } else if (category === LockerCategory.itemWrap) {
+  const variants = parseVariants(await ask('styles as channel=value,channel=value (blank = default): '));
+  const options = variants.length ? { variants } : {};
+  let describe: string = target;
+  let run: () => Promise<unknown>;
+  if (target === 'emote') {
+    const index = Number.parseInt(await ask('emote slot (0-7): '), 10) || 0;
+    describe = `emote slot ${index}`;
+    run = () => locker.equipEmote(cosmetic.id, index, options);
+  } else if (target === 'wrap') {
     const raw = await ask('wrap slot (0-6, blank = all): ');
-    slotIndex = raw === '' ? -1 : Number.parseInt(raw, 10);
-    if (!Number.isFinite(slotIndex)) slotIndex = -1;
+    const index = raw === '' ? undefined : Number.parseInt(raw, 10);
+    describe = index === undefined ? 'every wrap slot' : `wrap slot ${index}`;
+    run = () => locker.equipWrap(cosmetic.id, index, options);
+  } else {
+    run = () => locker.equip(target, cosmetic.id, options);
   }
 
-  console.log(`about to equip ${cosmetic.name} (${cosmetic.id}) to ${category} on your REAL account`);
+  console.log(`about to equip ${cosmetic.name} (${cosmetic.id}) to ${describe} on your REAL account`);
   if (!/^y/i.test(await ask('continue? [y/N]: '))) {
     console.log('cancelled');
     return;
   }
-
-  await locker.setSlot(category as (typeof LockerCategory)[keyof typeof LockerCategory], cosmetic.id, { slotIndex });
-  console.log(`equipped ${cosmetic.name} to ${category}${category === LockerCategory.dance || category === LockerCategory.itemWrap ? ` slot ${slotIndex}` : ''}`);
+  await run();
+  console.log(`equipped ${cosmetic.name} to ${describe}`);
 }
 
 async function saveLockerPreset(): Promise<void> {
   const active = await getSession();
-  const locker = new Locker(active, fortnite.cosmetics);
-  const target = Number.parseInt(await ask('preset index to save current fit into (e.g. 3): '), 10);
-  if (!Number.isFinite(target)) return;
-  const presetName = await ask('preset name (optional): ');
-  if (!/^y/i.test(await ask(`save current locker into preset ${target} on your REAL account? [y/N]: `))) {
+  const locker = new Locker(active);
+  const presetName = await ask('preset name: ');
+  if (!presetName) return;
+  if (!/^y/i.test(await ask(`save your current fit as "${presetName}" on your REAL account? [y/N]: `))) {
     console.log('cancelled');
     return;
   }
-  await locker.copyPreset(0, target, presetName || undefined);
-  console.log(`saved current locker into preset ${target}`);
+  const preset = await locker.savePreset(presetName);
+  console.log(`saved preset "${preset.name}" (${preset.id})`);
 }
 
-function cosmeticToCategory(backendValue: string): LockerCategoryValue | null {
-  const category = backendValue.startsWith('Athena') ? backendValue.slice('Athena'.length) : backendValue;
-  return LOCKER_CATEGORIES.has(category) ? (category as LockerCategoryValue) : null;
-}
-
-function parseVariants(input: string): LockerVariantUpdate[] {
-  return input
-    .split(',')
-    .map((pair) => pair.trim())
-    .filter((pair) => pair.includes('='))
-    .map((pair) => {
-      const [channel, active] = pair.split('=').map((part) => part.trim());
-      return { channel: channel ?? '', active: active ?? '' };
-    })
-    .filter((variant) => variant.channel.length > 0 && variant.active.length > 0);
-}
-
-async function buildLockerPreset(): Promise<void> {
-  const active = await getSession();
-  const locker = new Locker(active, fortnite.cosmetics);
-  const preset = locker.createPreset();
-
-  console.log('build a preset one cosmetic at a time — blank name when done.\n');
-  for (;;) {
-    const name = await ask('add cosmetic by name (blank = done): ');
-    if (!name) break;
-
-    const cosmetic = await fortnite.cosmetics.find(
-      new CosmeticSearchBuilder().name(name).matchMethod(MatchMethod.Contains),
-    );
-    if (!cosmetic) {
-      console.log(`  no cosmetic matching "${name}"`);
-      continue;
-    }
-
-    const category = cosmeticToCategory(cosmetic.type?.backendValue ?? '');
-    if (!category) {
-      console.log(`  "${cosmetic.name}" is a ${cosmetic.type?.displayValue ?? '?'} — not an equippable slot`);
-      continue;
-    }
-
-    let slotIndex = 0;
-    if (category === LockerCategory.dance) {
-      slotIndex = Number.parseInt(await ask('  emote slot (0-5): '), 10);
-      if (!Number.isFinite(slotIndex)) slotIndex = 0;
-    } else if (category === LockerCategory.itemWrap) {
-      const raw = await ask('  wrap slot (0-6, blank = all): ');
-      slotIndex = raw === '' ? -1 : Number.parseInt(raw, 10);
-      if (!Number.isFinite(slotIndex)) slotIndex = -1;
-    }
-
-    const variants = parseVariants(await ask('  styles as channel=value,channel=value (blank = default): '));
-    preset.slot(category, cosmetic.id, { slotIndex, variants });
-    const styleNote = variants.length ? ` +${variants.length} style(s)` : '';
-    const slotNote =
-      category === LockerCategory.dance || category === LockerCategory.itemWrap ? ` slot ${slotIndex}` : '';
-    console.log(`  added ${cosmetic.name} → ${category}${slotNote}${styleNote}  (${preset.size} slot(s) queued)`);
+async function pickPreset(locker: Locker): Promise<LockerPreset | null> {
+  const presets = await locker.presets();
+  if (presets.length === 0) {
+    console.log('no presets saved');
+    return null;
   }
+  presets.forEach((preset, index) => console.log(`  ${index + 1}. ${preset.name}${preset.favorite ? ' ★' : ''}`));
+  const picked = presets[Number.parseInt(await ask('preset number: '), 10) - 1];
+  if (!picked) console.log('no such preset');
+  return picked ?? null;
+}
 
-  if (preset.size === 0) {
-    console.log('nothing added');
+async function applyLockerPreset(): Promise<void> {
+  const locker = new Locker(await getSession());
+  const preset = await pickPreset(locker);
+  if (!preset) return;
+  if (!/^y/i.test(await ask(`equip "${preset.name}" on your REAL account? [y/N]: `))) return;
+  await locker.applyPreset(preset.id);
+  console.log(`equipped "${preset.name}"`);
+}
+
+async function deleteLockerPreset(): Promise<void> {
+  const locker = new Locker(await getSession());
+  const preset = await pickPreset(locker);
+  if (!preset) return;
+  if (!/^y/i.test(await ask(`delete "${preset.name}" from your REAL account? [y/N]: `))) return;
+  await locker.deletePreset(preset.id);
+  console.log(`deleted "${preset.name}"`);
+}
+
+async function colorLockerItem(): Promise<void> {
+  const locker = new Locker(await getSession());
+  const slotName = (await ask('slot (glider, carBody, suvBody, ...): ')) as LockerSlotName;
+  if (!LOCKER_SLOTS[slotName]) {
+    console.log(`unknown slot "${slotName}"`);
     return;
   }
-
-  const presetName = await ask('preset name (optional): ');
-  if (presetName) preset.name(presetName);
-
-  const idxRaw = await ask('apply into preset index (blank = active locker): ');
-  const target = idxRaw === '' ? {} : { preset: Number.parseInt(idxRaw, 10) };
-
-  console.log(`about to apply ${preset.size} slot(s) to your REAL account`);
-  if (!/^y/i.test(await ask('continue? [y/N]: '))) {
-    console.log('cancelled');
-    return;
-  }
-
-  await preset.apply(target);
-  console.log(`applied preset (${preset.size} slot(s))${presetName ? ` as "${presetName}"` : ''}`);
+  const color = await ask('colour (#RRGGBB): ');
+  if (!color) return;
+  if (!/^y/i.test(await ask(`recolour ${slotName} on your REAL account? [y/N]: `))) return;
+  const loadout = await locker.setColor(slotName, color);
+  console.log(`${slotName} now ${loadout.slots[slotName]?.variants.map((variant) => variant.additionalData).filter(Boolean).join(', ')}`);
 }
 
 async function queryAthena(): Promise<void> {
@@ -674,6 +670,263 @@ async function friendsUnblock(): Promise<void> {
   if (!id) return;
   await active.unblockAccount(id);
   console.log(`unblocked ${id}`);
+}
+
+function printStandings(standings: RankedStanding[]): void {
+  if (standings.length === 0) {
+    console.log('  no ranked tracks');
+    return;
+  }
+  for (const standing of standings) {
+    const mode = standing.mode.name.padEnd(26);
+    if (!standing.played) {
+      console.log(`  ${mode} Unranked`);
+      continue;
+    }
+    const placement = standing.unrealRank !== null ? ` #${standing.unrealRank}` : ` ${Math.round(standing.progress * 100)}%`;
+    const peak = standing.highest.division > standing.current.division ? `  (peak ${standing.highest.name})` : '';
+    const seasonal = standing.current.seasonalName ? ` "${standing.current.seasonalName}"` : '';
+    const season = standing.active ? '' : `  [${standing.track?.endTime.slice(0, 10) ?? 'past'}]`;
+    console.log(`  ${mode} ${standing.current.name}${seasonal}${placement}${peak}${season}`);
+  }
+}
+
+async function pickTournament(active: EpicAuthSession): Promise<Tournament | null> {
+  const region = ((await ask('region (NAE/NAW/NAC/EU/BR/ASIA/OCE/ME, blank = EU): ')) || 'EU').toUpperCase();
+  const tournaments = await active.tournaments({ region, showPastEvents: true });
+  if (tournaments.length === 0) {
+    console.log('no tournaments');
+    return null;
+  }
+  tournaments.slice(0, 30).forEach((tournament, index) => {
+    const when = tournament.nextWindow ? new Date(tournament.nextWindow.beginTime).toLocaleString() : 'finished';
+    console.log(`  ${String(index + 1).padStart(2)}. [${tournament.status}] ${tournament.name} — ${when}`);
+  });
+  const picked = tournaments[Number.parseInt(await ask('tournament number: '), 10) - 1];
+  if (!picked) console.log('no such tournament');
+  return picked ?? null;
+}
+
+async function listTournaments(): Promise<void> {
+  const active = await getSession();
+  const region = ((await ask('region (blank = EU): ')) || 'EU').toUpperCase();
+  for (const tournament of await active.tournaments({ region })) {
+    const next = tournament.nextWindow;
+    const eligible = next?.eligible === false ? ' (not eligible)' : '';
+    console.log(`[${tournament.status}] ${tournament.name} · ${tournament.type ?? '?'}${eligible}`);
+    if (next) console.log(`    round ${next.round} ${new Date(next.beginTime).toLocaleString()} → ${new Date(next.endTime).toLocaleString()} · ${next.playlistId ?? '?'}`);
+  }
+}
+
+async function tournamentDetail(): Promise<void> {
+  const active = await getSession();
+  const tournament = await pickTournament(active);
+  if (!tournament) return;
+  console.log(`${tournament.name}${tournament.subtitle ? ` — ${tournament.subtitle}` : ''}`);
+  if (tournament.description) console.log(tournament.description);
+  console.log(`min level ${tournament.minimumAccountLevel ?? '?'} · regions ${tournament.regions.join(', ')}`);
+  for (const window of tournament.windows) {
+    const prizes = window.payouts.flatMap((tier) => tier.ranks).length;
+    console.log(
+      `  ${window.id} [${window.status}] ${new Date(window.beginTime).toLocaleString()} · cap ${window.matchCap ?? '?'} · ${prizes} prize tier(s) · ${window.brackets.length} bracket(s) · eligible ${window.eligible}`,
+    );
+  }
+}
+
+async function tournamentLeaderboard(): Promise<void> {
+  const active = await getSession();
+  const tournament = await pickTournament(active);
+  if (!tournament) return;
+  tournament.windows.forEach((window, index) => console.log(`  ${index + 1}. ${window.id} [${window.status}]`));
+  const window = tournament.windows[Number.parseInt(await ask('window number: '), 10) - 1];
+  if (!window) return;
+  const page = Number.parseInt((await ask('page (0-99, blank = 0): ')) || '0', 10);
+  const board = await active.tournamentLeaderboard(tournament.eventId, window.id, { page });
+  console.log(`page ${board.page + 1}/${board.totalPages}, updated ${board.updatedTime}`);
+  const ids = [...new Set(board.entries.slice(0, 25).flatMap((entry) => entry.teamAccountIds))];
+  const names = new Map((await active.accountsByIds(ids)).map((account) => [account.id, account.displayName]));
+  for (const entry of board.entries.slice(0, 25)) {
+    console.log(`  #${entry.rank} ${entry.pointsEarned} pts — ${entry.teamAccountIds.map((id) => names.get(id) ?? id).join(', ')}`);
+  }
+}
+
+async function myTournamentHistory(): Promise<void> {
+  const active = await getSession();
+  const tournament = await pickTournament(active);
+  if (!tournament) return;
+  const history = await active.tournamentHistory(tournament.eventId);
+  if (history.length === 0) console.log('no scores in this tournament');
+  for (const score of history) {
+    console.log(`  ${score.scoreKey?.eventWindowId ?? score.eventWindowId}: #${score.rank} · ${score.pointsEarned} pts · ${score.sessionHistory.length} match(es)`);
+  }
+}
+
+async function myTournamentTokens(): Promise<void> {
+  const active = await getSession();
+  const player = await active.tournamentPlayer();
+  console.log(`${player.tokens.length} tokens:`);
+  console.log(player.tokens.join(', '));
+}
+
+function printIsland(island: Island): void {
+  console.log(`${island.title} (${island.code}) by ${island.creator.name || island.creator.accountId}`);
+  console.log(`  ${island.type} v${island.version} · ${island.state ?? (island.active ? 'active' : 'inactive')} · ${island.moderationStatus ?? '?'}`);
+  if (island.tagline) console.log(`  ${island.tagline}`);
+  if (island.tags.length) console.log(`  tags: ${island.tags.join(', ')}`);
+  if (island.players.max !== null) console.log(`  players: ${island.players.min ?? '?'}-${island.players.max}`);
+  if (island.image) console.log(`  image: ${island.image}`);
+}
+
+async function islandLookup(): Promise<void> {
+  const code = (await ask('island / playlist code: ')).trim();
+  if (!code) return;
+  const island = await (await getSession()).island(code);
+  if (!island) {
+    console.log(`no active link for "${code}"`);
+    return;
+  }
+  printIsland(island);
+}
+
+async function islandRelatedView(): Promise<void> {
+  const code = (await ask('island / playlist code: ')).trim();
+  if (!code) return;
+  const related = await (await getSession()).islandRelated(code);
+  console.log(`parents: ${related.parentLinks.map((link) => link.mnemonic).join(', ') || 'none'}`);
+  console.log(`links: ${Object.keys(related.links).join(', ')}`);
+}
+
+async function creatorIslandsView(): Promise<void> {
+  const active = await getSession();
+  const name = (await ask('creator display name: ')).trim();
+  if (!name) return;
+  const account = await active.accountByDisplayName(name);
+  const page = await active.creatorIslands(account.id);
+  if (page.links.length === 0) {
+    console.log('no published islands');
+    return;
+  }
+  const islands = await active.islands(page.links.map((link) => link.linkCode));
+  const titles = new Map(islands.map((island) => [island.code, island.title]));
+  for (const link of page.links) {
+    console.log(`  ${link.linkCode} ${titles.get(link.linkCode) ?? ''}${link.globalCCU >= 0 ? ` · ${link.globalCCU} playing` : ''}`);
+  }
+  if (page.hasMore) console.log('  …more available');
+}
+
+async function myIslandsView(): Promise<void> {
+  const mine = await (await getSession()).myIslands();
+  if (mine.length === 0) console.log('no links on this account');
+  for (const island of mine) printIsland(island);
+}
+
+const questCatalog = new QuestCatalog(fncc.quests);
+
+function printQuest(quest: Quest, indent = '    '): void {
+  const objectives = quest.objectives
+    .map((objective) => `${objective.progress}/${objective.target ?? '?'}`)
+    .join(', ');
+  const stage = quest.objectives.find((objective) => objective.stage !== null && objective.stageCount !== null);
+  const flags = [
+    stage ? `stage ${stage.stage}/${stage.stageCount}` : null,
+    quest.completed ? 'done' : null,
+    quest.tracked ? 'tracked' : null,
+  ]
+    .filter(Boolean)
+    .join(', ');
+  console.log(`${indent}${quest.name ?? quest.templateId} — ${objectives}${flags ? ` (${flags})` : ''}`);
+}
+
+async function questLogView(): Promise<void> {
+  const active = await getSession();
+  const raw = (await ask('mode (battle-royale/festival/lego/rocket-racing/…, blank = all): ')).trim();
+  const log = await new QuestBook(active, questCatalog).log(raw ? { mode: raw as QuestMode } : {});
+  if (log.xp) console.log(`season ${log.xp.seasonNumber} · level ${log.xp.seasonLevel}`);
+  for (const category of log.categories) {
+    console.log(`\n${category.name}${category.mode ? ` [${category.mode}]` : ''}`);
+    for (const header of category.headers) {
+      if (header.name) console.log(`  ${header.name}`);
+      for (const quest of header.quests) printQuest(quest);
+    }
+  }
+  if (log.uncategorized.length) {
+    console.log(`\nOther (${log.uncategorized.length})`);
+    for (const quest of log.uncategorized.slice(0, 20)) printQuest(quest);
+  }
+}
+
+async function stwQuestLogView(): Promise<void> {
+  const log = await new QuestBook(await getSession(), questCatalog).stw();
+  console.log(`save the world · ${log.quests.length} active quests · ${log.dailyRerolls} daily reroll(s) left`);
+  for (const category of log.categories) {
+    console.log(`\n${category.name}`);
+    for (const quest of category.quests) printQuest(quest);
+  }
+  if (log.uncategorized.length) {
+    console.log('\nOther');
+    for (const quest of log.uncategorized) printQuest(quest);
+  }
+}
+
+async function rerollStwDaily(): Promise<void> {
+  const book = new QuestBook(await getSession(), questCatalog);
+  const log = await book.stw();
+  if (log.dailies.length === 0) {
+    console.log('no active STW daily quests');
+    return;
+  }
+  console.log(`STW daily quests (the only rerollable ones) · ${log.dailyRerolls} reroll(s) left today:`);
+  log.dailies.forEach((quest, index) => printQuest(quest, `  ${index + 1}. `));
+  if (log.dailyRerolls <= 0) {
+    console.log('no rerolls left — they refresh with the daily reset');
+    return;
+  }
+  const quest = log.dailies[Number.parseInt(await ask('daily to reroll: '), 10) - 1];
+  if (!quest) return;
+  if (!/^y/i.test(await ask(`reroll "${quest.name ?? quest.templateId}" on your REAL account? [y/N]: `))) return;
+  await book.reroll(quest);
+  const after = await book.stw();
+  console.log(`rerolled · ${after.dailyRerolls} reroll(s) left. dailies now:`);
+  after.dailies.forEach((entry, index) => printQuest(entry, `  ${index + 1}. `));
+}
+
+async function questLookup(): Promise<void> {
+  const id = (await ask('quest template id (e.g. Quest:quest_s42_weekly_w07_q01): ')).trim();
+  if (!id) return;
+  const quest = await fncc.quests.get(id);
+  console.log(`${quest.name ?? quest.templateId} [${quest.source}]`);
+  if (quest.description) console.log(`  ${quest.description}`);
+  for (const [objectiveId, objective] of Object.entries(quest.objectives)) {
+    console.log(`  ${objectiveId}: ${objective.description ?? '?'} (${objective.count ?? '?'})`);
+  }
+}
+
+async function saveQuestCatalog(): Promise<void> {
+  const file = (await ask('save catalog to (blank = quest-catalog.json): ')).trim() || 'quest-catalog.json';
+  writeFileSync(file, JSON.stringify(await questCatalog.export()));
+  console.log(`saved ${questCatalog.size} quest entries to ${file}`);
+}
+
+async function rankedMyStandings(): Promise<void> {
+  const active = await getSession();
+  console.log(`ranked for ${active.displayName ?? active.accountId}:`);
+  printStandings(await active.rankedStandings());
+}
+
+async function rankedPlayerStandings(): Promise<void> {
+  const name = (await ask('display name: ')).trim();
+  if (!name) return;
+  const active = await getSession();
+  const account = await active.accountByDisplayName(name);
+  console.log(`ranked for ${account.displayName}:`);
+  printStandings(await active.rankedStandings(account.id));
+}
+
+async function rankedHistory(): Promise<void> {
+  const active = await getSession();
+  const history = await active.rankedStandings(undefined, { history: true, playedOnly: true });
+  console.log(`${history.length} played ranked track(s):`);
+  printStandings(history);
 }
 
 async function rankedTracks(): Promise<void> {
@@ -970,6 +1223,86 @@ async function playtimeView(): Promise<void> {
   for (const entry of all.slice(0, 20)) console.log(`  ${preview(entry)}`);
 }
 
+async function contentNotices(): Promise<void> {
+  const notices = await epic.content.emergencyNotices();
+  console.log(notices.length === 0 ? 'no emergency notices right now' : `${notices.length} emergency notice(s):`);
+  for (const notice of notices) {
+    console.log(`  ${notice.hidden ? '(hidden) ' : ''}${notice.title}: ${notice.body}`);
+  }
+  const login = await epic.content.loginMessage();
+  if (login) console.log(`login message: ${login.title} — ${login.body}`);
+}
+
+async function contentMotds(): Promise<void> {
+  const active = await getSession();
+  const motds = await active.motds();
+  console.log(motds.length === 0 ? 'no motds right now' : `${motds.length} motd(s):`);
+  for (const motd of motds) {
+    const fields = motd.contentFields;
+    console.log(`  ${fields.TeaserTitle ?? fields.FullScreenTitle ?? motd.contentHash}`);
+    if (fields.FullScreenBody) console.log(`    ${fields.FullScreenBody.split('\n')[0]}`);
+  }
+}
+
+async function contentTournaments(): Promise<void> {
+  const tournaments = await epic.content.tournaments();
+  console.log(`${tournaments.length} tournament display entries (showing 15):`);
+  for (const tournament of tournaments.slice(0, 15)) {
+    const title = tournament.long_format_title ?? [tournament.title_line_1, tournament.title_line_2].filter(Boolean).join(' ');
+    console.log(`  ${tournament.tournament_display_id.padEnd(36)} ${title}`);
+  }
+}
+
+async function contentBackgrounds(): Promise<void> {
+  for (const background of await epic.content.backgrounds()) {
+    console.log(`  ${background.key.padEnd(8)} ${background.stage.padEnd(16)} ${background.backgroundimage ?? '(default)'}`);
+  }
+}
+
+async function contentBuild(): Promise<void> {
+  const version = await epic.game.version();
+  console.log(`server:  ${version.version} (CL ${version.cln}, built ${version.buildDate})`);
+  const active = await getSession();
+  const build = await active.fortniteBuild();
+  console.log(`client:  ${build.version} (CL ${build.changelist})  ${build.buildVersion}`);
+}
+
+async function contentInstaller(): Promise<void> {
+  const installer = await epic.launcher.installer(LauncherInstaller.LauncherWindows);
+  console.log(`${installer.fileName ?? installer.app}: ${installer.url}`);
+}
+
+async function islandPackageView(): Promise<void> {
+  const code = (await ask('island code (e.g. 7865-8305-9184): ')).trim();
+  if (!code) return;
+  const active = await getSession();
+  const pack = await active.islandPackage(code);
+  console.log(`${pack.projectFlags.meta.title} — ${pack.status}, ${pack.content.length} modules, encrypted: ${pack.isEncrypted}`);
+  console.log(`live link v${pack.projectFlags.liveLink.linkVersion}, published ${pack.projectFlags.liveLink.lastPublished}`);
+  console.log(`root module ${pack.resolved.root.moduleId} v${pack.resolved.root.version}`);
+}
+
+async function islandKeysView(): Promise<void> {
+  const code = (await ask('island code: ')).trim();
+  if (!code) return;
+  const active = await getSession();
+  const keys = await active.islandKeys(code);
+  if (keys.length === 0) {
+    console.log('island is not encrypted');
+    return;
+  }
+  for (const key of keys) console.log(`  guid ${key.guid}\n  key  ${key.key}`);
+}
+
+async function islandLaunch(): Promise<void> {
+  const code = (await ask('island code to launch on this account: ')).trim();
+  if (!code) return;
+  if ((await ask(`queue ${code} on your account? (y/N): `)).trim().toLowerCase() !== 'y') return;
+  const active = await getSession();
+  const result = await active.launchIsland(code);
+  console.log(result.status === 'notified' ? 'launched in the running game' : `status: ${result.status}`);
+}
+
 async function libraryView(): Promise<void> {
   const active = await getSession();
   const records = await active.libraryAll();
@@ -1127,7 +1460,7 @@ async function xmppConnectWatch(): Promise<void> {
 
 async function xmppListPresences(): Promise<void> {
   const active = await getSession();
-  const client = await active.connectEvents({ webSocket: connectWsFactory as never });
+  const client = await active.connectEvents();
   if (client.presences.size === 0) {
     console.log('opened EOS stream — collecting friend presence...');
     await new Promise((resolve) => setTimeout(resolve, 4000));
@@ -1200,10 +1533,6 @@ async function chatViewHistory(): Promise<void> {
   }
 }
 
-function connectWsFactory(url: string, _protocols?: string | string[], options?: { headers?: Record<string, string> }): unknown {
-  return new WebSocket(url, { headers: { ...(options?.headers ?? {}) } });
-}
-
 async function presenceSetCustomStatus(): Promise<void> {
   const active = await getSession();
   const status = await ask('custom status text (renders in-game): ');
@@ -1211,9 +1540,9 @@ async function presenceSetCustomStatus(): Promise<void> {
   console.log('  online indicator: 1) online  2) away  3) extended away');
   const pick = await ask('  choose 1-3 (blank = online): ');
   const onlineType = pick === '2' ? 'away' : pick === '3' ? 'xa' : 'online';
-  await active.connectEvents({ webSocket: connectWsFactory as never });
-  await active.setCustomStatus(status, { onlineType });
-  console.log(`custom status set to "${status}" (${onlineType}) — held live while the connect session stays open.`);
+  const presence = await active.setCustomStatus(status, { onlineType });
+  const stored = presence?.perNs[0]?.activity?.value ?? '(not echoed)';
+  console.log(`custom status set — epic stored "${stored}" (${presence?.status ?? onlineType}), re-applied on every reconnect.`);
   console.log('(leaving this menu keeps the session; "disconnect live events" or "clear custom status" ends it)');
 }
 
@@ -1225,7 +1554,7 @@ async function presenceClearCustomStatus(): Promise<void> {
 
 async function chatConnectEvents(): Promise<void> {
   const active = await getSession();
-  const client = await active.connectEvents({ webSocket: connectWsFactory as never });
+  const client = await active.connectEvents();
   console.log(`connected — connection ${client.connection ?? '(pending)'}`);
   console.log('watching live DM / party / presence events for 30s...\n');
 
@@ -1310,7 +1639,7 @@ async function shopSetReceiveGifts(): Promise<void> {
 
 async function liveWatch(): Promise<void> {
   const active = await getSession();
-  const bot = await active.live({ connect: { webSocket: connectWsFactory as never } });
+  const bot = await active.live();
   console.log(`live client connected — party ${bot.party?.id ?? 'none'}, ${bot.friends.size} friend(s) cached`);
   console.log('watching decoded live events for 60s...\n');
 
@@ -1337,7 +1666,7 @@ async function liveWatch(): Promise<void> {
 
 async function liveRequests(): Promise<void> {
   const active = await getSession();
-  const bot = await active.live({ connect: { webSocket: connectWsFactory as never } });
+  const bot = await active.live();
   const requests = [...bot.incomingRequests.values()];
   if (requests.length === 0) {
     console.log('no pending incoming friend requests captured yet — run "watch" to collect them');
@@ -1357,7 +1686,7 @@ async function liveRequests(): Promise<void> {
 
 async function liveInvites(): Promise<void> {
   const active = await getSession();
-  const bot = await active.live({ connect: { webSocket: connectWsFactory as never } });
+  const bot = await active.live();
   const invites = [...bot.pendingInvites.values()];
   if (invites.length === 0) {
     console.log('no pending party invites captured yet — run "watch" to collect them');
@@ -1384,14 +1713,14 @@ async function liveInvites(): Promise<void> {
 
 async function liveCreateParty(): Promise<void> {
   const active = await getSession();
-  const bot = await active.live({ connect: { webSocket: connectWsFactory as never } });
+  const bot = await active.live();
   const party = await bot.createParty();
   console.log(`created party ${party.id} — ${party.members.length} member(s)`);
 }
 
 async function liveJoin(): Promise<void> {
   const active = await getSession();
-  const bot = await active.live({ connect: { webSocket: connectWsFactory as never } });
+  const bot = await active.live();
   console.log('1) join a friend (by account id, via their presence)');
   console.log('2) join a party by id');
   const mode = await ask('> ');
@@ -1410,14 +1739,14 @@ async function liveJoin(): Promise<void> {
 
 async function liveLeave(): Promise<void> {
   const active = await getSession();
-  const bot = await active.live({ connect: { webSocket: connectWsFactory as never } });
+  const bot = await active.live();
   await bot.leaveParty();
   console.log('left party');
 }
 
 async function liveSetPrivacy(): Promise<void> {
   const active = await getSession();
-  const bot = await active.live({ connect: { webSocket: connectWsFactory as never } });
+  const bot = await active.live();
   const party = bot.party;
   if (!party) {
     console.log('not in a party — create or join one first');
@@ -1639,6 +1968,7 @@ async function fnccStatus(): Promise<void> {
 async function fnccVersion(): Promise<void> {
   const version = await fncc.game.version();
   console.log(`game version:   ${version.gameVersion}`);
+  console.log(`clean build:    ${version.cleanBuild} (CL ${version.changelist}, ${version.branch})`);
   console.log(`dataset build:  ${version.datasetBuild}`);
   console.log(`published:      ${version.publishedAt}`);
   console.log(`complete:       ${version.complete}`);
@@ -1648,7 +1978,7 @@ async function fnccVersion(): Promise<void> {
 
 async function fnccAes(): Promise<void> {
   const aes = await fncc.game.aes();
-  console.log(`version ${aes.version} (source ${aes.source})`);
+  console.log(`version ${aes.version} (fetched ${aes.fetchedAt})`);
   console.log(`main key ${aes.mainKey}`);
   console.log(`${aes.dynamicKeys.length} dynamic keys`);
 }
@@ -1725,7 +2055,8 @@ async function fnccAssets(): Promise<void> {
 async function fnccImageUrl(): Promise<void> {
   const path = await ask('asset path: ');
   if (!path) return;
-  const format = (await ask('format (png/webp/jpeg, blank = default): ')) || undefined;
+  const picked = await ask('format (png/webp/jpeg/tga, blank = default): ');
+  const format = (['png', 'webp', 'jpeg', 'tga'] as const).find((value) => value === picked);
   const url = fncc.images.url({ path, ...(format ? { format } : {}) });
   console.log(url);
 }
@@ -1735,7 +2066,8 @@ async function fnccWeapons(): Promise<void> {
   const result = await fncc.weapons.list({ ...(search ? { search } : {}), limit: 15 });
   console.log(`${result.total} weapons (showing ${result.data.length}):`);
   for (const weapon of result.data.slice(0, 15)) {
-    console.log(`  ${weapon.id}  ${weapon.name}  [${weapon.rarity?.displayValue ?? '?'} ${weapon.type}]`);
+    const dps = weapon.stats?.damagePerSecond;
+    console.log(`  ${weapon.id}  ${weapon.name}  [${weapon.rarity ?? '?'} ${weapon.category}${dps ? `, ${dps.toFixed(1)} dps` : ''}]`);
   }
 }
 
@@ -1751,7 +2083,7 @@ async function fnccPlaylists(): Promise<void> {
   const playlists = await fncc.playlists.list();
   console.log(`${playlists.length} playlists:`);
   for (const playlist of playlists.slice(0, 15)) {
-    console.log(`  ${playlist.id}  ${playlist.name}  [${playlist.gameType}]`);
+    console.log(`  ${playlist.id}  ${playlist.name}  [${playlist.gameType ?? '?'}]`);
   }
 }
 
@@ -1759,7 +2091,7 @@ async function fnccFish(): Promise<void> {
   const fish = await fncc.fish.list();
   console.log(`${fish.length} fish:`);
   for (const entry of fish.slice(0, 15)) {
-    console.log(`  ${entry.id}  ${entry.name}  [${entry.rarity?.displayValue ?? '?'}]`);
+    console.log(`  ${entry.id}  ${entry.name}  [${entry.rarity ?? '?'}]${entry.enabled ? '' : '  (vaulted)'}`);
   }
 }
 
@@ -1819,7 +2151,101 @@ async function fnccCloudStorage(): Promise<void> {
 
 async function fnccAntiCheat(): Promise<void> {
   const info = await fncc.anticheat.info();
-  console.log(JSON.stringify(info, null, 2).slice(0, 600));
+  console.log(`EAC ${info.productVersion} (${info.version}), runtime ${info.runtimeVersion}`);
+  console.log(`game ${info.gameVersion}, checked ${info.checkedAt}`);
+  for (const file of [...info.files, ...info.certificates]) {
+    console.log(`  ${file.name.padEnd(48)} ${file.size}b${file.url ? `  ${file.url}` : ''}`);
+  }
+}
+
+async function fnccCosmeticsSearchAll(): Promise<void> {
+  const search = await ask('search every category for: ');
+  if (!search) return;
+  const result = await fncc.cosmetics.searchAll({ search, limit: 15 });
+  console.log(`${result.total} matches (showing ${result.data.length}):`);
+  for (const item of result.data) {
+    const name = 'name' in item ? item.name : item.title;
+    console.log(`  [${item.category}] ${item.id}  ${name}`);
+  }
+}
+
+async function fnccCosmeticTypes(): Promise<void> {
+  const types = await fncc.cosmetics.types();
+  console.log(`${types.length} cosmetic types:`);
+  for (const type of types) {
+    console.log(`  ${type.value.padEnd(22)} ${type.displayValue.padEnd(24)} ${String(type.count).padStart(6)}  [${type.category}]`);
+  }
+}
+
+async function fnccRarities(): Promise<void> {
+  const rarities = await fncc.rarities.list();
+  for (const rarity of rarities) {
+    console.log(`  ${rarity.displayValue.padEnd(26)} ${rarity.hexColors[0] ?? ''}  ${rarity.cosmetics} cosmetics, ${rarity.weapons} weapons`);
+  }
+}
+
+async function fnccLootSearch(): Promise<void> {
+  const q = await ask('item to find in loot pools (e.g. shotgun): ');
+  if (!q) return;
+  const result = await fncc.lootpool.search({ q, limit: 15 });
+  console.log(`${result.total} drops (showing ${result.data.length}):`);
+  for (const hit of result.data) {
+    console.log(`  ${(hit.chance * 100).toFixed(2).padStart(6)}%  ${hit.name} [${hit.rarity ?? '?'}]  ${hit.poolName} / ${hit.containerName}`);
+  }
+}
+
+async function fnccSeasons(): Promise<void> {
+  const seasons = await fncc.seasons.list();
+  const current = seasons.find((season) => season.current);
+  console.log(`${seasons.length} seasons, current: ${current?.displayName ?? '?'} (${current?.storefront ?? '?'})`);
+  for (const season of seasons.slice(-10)) {
+    console.log(`  ${String(season.season).padStart(3)}  ${season.displayName}${season.current ? '  <- current' : ''}`);
+  }
+}
+
+async function fnccBattlePasses(): Promise<void> {
+  const passes = await fncc.battlepasses.list();
+  for (const pass of passes) {
+    console.log(`  ${pass.displayName.padEnd(16)} ${pass.name}  (${pass.rewardCount} rewards, ${pass.categories.length} tracks)`);
+  }
+}
+
+async function fnccBundles(): Promise<void> {
+  const q = await ask('bundle search (blank = currently in shop): ');
+  const result = await fncc.bundles.list(q ? { q, limit: 15 } : { inShop: true, limit: 15 });
+  console.log(`${result.total} bundles (showing ${result.data.length}):`);
+  for (const bundle of result.data) {
+    console.log(`  ${bundle.id}  ${bundle.name ?? '?'}  ${bundle.price.finalPrice} vbucks, ${bundle.items.length} items, seen ${bundle.occurrences}x`);
+  }
+}
+
+async function fnccModes(): Promise<void> {
+  const modes = await fncc.modes.list();
+  console.log(`season ${modes.season.number}, ends ${modes.season.end}`);
+  for (const mode of modes.modes) {
+    const rotating = mode.maps.filter((map) => map.inRotation).map((map) => map.name ?? map.code);
+    console.log(`  ${mode.name.padEnd(16)} ${mode.enabled ? 'on ' : 'off'}  maps in rotation: ${rotating.join(', ') || 'none'}`);
+  }
+}
+
+async function fnccFixPath(): Promise<void> {
+  const path = await ask('asset path to resolve: ');
+  if (!path) return;
+  const fixed = await fncc.assets.fixPath(path);
+  if (!fixed.found) {
+    console.log(`not found: ${fixed.error ?? 'no match'}`);
+    return;
+  }
+  console.log(`object path: ${fixed.objectPath}`);
+  console.log(`class:       ${fixed.class}  (${fixed.archive})`);
+  for (const entry of fixed.exports) console.log(`  export ${entry.name} (${entry.class})`);
+}
+
+async function fnccShorten(): Promise<void> {
+  const url = await ask('url to shorten (http/https): ');
+  if (!url) return;
+  const link = await fncc.shorten.create(url);
+  console.log(`${link.url} -> ${link.target} (expires ${link.expiresAt})`);
 }
 
 interface MenuItem {
@@ -1944,6 +2370,16 @@ const fnccMenu: Menu = {
     { key: 'd', label: 'discovery surfaces', action: fnccDiscovery },
     { key: 'c', label: 'cloud storage files', action: fnccCloudStorage },
     { key: 'h', label: 'anticheat info', action: fnccAntiCheat },
+    { key: 'v', label: 'cosmetic search (every category)', action: fnccCosmeticsSearchAll },
+    { key: 'y', label: 'cosmetic types', action: fnccCosmeticTypes },
+    { key: 'r', label: 'rarities', action: fnccRarities },
+    { key: 't', label: 'loot pool search (drop chances)', action: fnccLootSearch },
+    { key: 'e', label: 'seasons', action: fnccSeasons },
+    { key: 'x', label: 'battle passes', action: fnccBattlePasses },
+    { key: 'u', label: 'bundles', action: fnccBundles },
+    { key: 'g', label: 'game modes & map rotation', action: fnccModes },
+    { key: 'z', label: 'fix asset path', action: fnccFixPath },
+    { key: 'j', label: 'shorten a url', action: fnccShorten },
   ],
 };
 
@@ -1968,10 +2404,36 @@ const friendsMenu: Menu = {
 const rankedMenu: Menu = {
   title: 'ranked (habanero)',
   items: [
-    { key: '1', label: 'list tracks', action: rankedTracks },
-    { key: '2', label: 'track detail (by guid)', action: rankedTrackDetail },
-    { key: '3', label: 'my progress (by track guid)', action: rankedMyProgress },
-    { key: '4', label: 'all my progress', action: rankedAllProgress },
+    { key: '1', label: 'my ranks (current season)', action: rankedMyStandings },
+    { key: '2', label: 'player ranks (by display name)', action: rankedPlayerStandings },
+    { key: '3', label: 'my ranked history (every season)', action: rankedHistory },
+    { key: '4', label: 'list tracks (raw)', action: rankedTracks },
+    { key: '5', label: 'track detail (by guid)', action: rankedTrackDetail },
+    { key: '6', label: 'my progress (by track guid)', action: rankedMyProgress },
+    { key: '7', label: 'all my progress (raw)', action: rankedAllProgress },
+  ],
+};
+
+const tournamentsMenu: Menu = {
+  title: 'tournaments',
+  items: [
+    { key: '1', label: 'list tournaments (by region)', action: listTournaments },
+    { key: '2', label: 'tournament detail (windows, prizes, eligibility)', action: tournamentDetail },
+    { key: '3', label: 'window leaderboard', action: tournamentLeaderboard },
+    { key: '4', label: 'my history in a tournament', action: myTournamentHistory },
+    { key: '5', label: 'my tournament tokens', action: myTournamentTokens },
+  ],
+};
+
+const questsMenu: Menu = {
+  title: 'quests',
+  note: 'names, categories and order come from fn-api.cc /v1/quests',
+  items: [
+    { key: '1', label: 'quest log (br + every mode, game order)', action: questLogView },
+    { key: '2', label: 'save the world quests', action: stwQuestLogView },
+    { key: '3', label: 'reroll an stw daily (REAL write)', action: rerollStwDaily },
+    { key: '4', label: 'save quest catalog to a file', action: saveQuestCatalog },
+    { key: '5', label: 'look up a quest by template id', action: questLookup },
   ],
 };
 
@@ -2064,6 +2526,26 @@ const economyMenu: Menu = {
   ],
 };
 
+const contentMenu: Menu = {
+  title: 'news, content & islands',
+  note: 'content pages need no login; motds, build and islands use the saved account',
+  items: [
+    { key: '1', label: 'emergency notices + login message', action: contentNotices },
+    { key: '2', label: 'motds (personalised)', action: contentMotds },
+    { key: '3', label: 'tournaments', action: contentTournaments },
+    { key: '4', label: 'lobby backgrounds', action: contentBackgrounds },
+    { key: '5', label: 'fortnite version (server + client build)', action: contentBuild },
+    { key: '6', label: 'launcher installer download', action: contentInstaller },
+    { key: '7', label: 'island package (by code)', action: islandPackageView },
+    { key: '8', label: 'island aes key (by code)', action: islandKeysView },
+    { key: '9', label: 'launch island (REAL, queues on account)', action: islandLaunch },
+    { key: 'a', label: 'island / link lookup (by code)', action: islandLookup },
+    { key: 'b', label: 'related links (by code)', action: islandRelatedView },
+    { key: 'c', label: 'creator islands (by display name)', action: creatorIslandsView },
+    { key: 'd', label: 'my links', action: myIslandsView },
+  ],
+};
+
 const libraryMenu: Menu = {
   title: 'library (owned games)',
   note: 'reads the epic games library via a launcherApp token (minted automatically)',
@@ -2134,6 +2616,8 @@ const epicMenu: Menu = {
     { key: '4', label: 'session & tokens', action: () => runMenu(sessionMenu), submenu: true },
     { key: '5', label: 'friends', action: () => runMenu(friendsMenu), submenu: true },
     { key: '6', label: 'ranked (habanero)', action: () => runMenu(rankedMenu), submenu: true },
+    { key: 't', label: 'tournaments', action: () => runMenu(tournamentsMenu), submenu: true },
+    { key: 'q', label: 'quests', action: () => runMenu(questsMenu), submenu: true },
     { key: '7', label: 'identity & connections', action: () => runMenu(identityMenu), submenu: true },
     { key: '8', label: 'status & presence', action: () => runMenu(statusMenu), submenu: true },
     { key: 'x', label: 'xmpp / presence (realtime)', action: () => runMenu(xmppMenu), submenu: true },
@@ -2147,6 +2631,7 @@ const epicMenu: Menu = {
     { key: 'm', label: 'matchmaking', action: () => runMenu(matchmakingMenu), submenu: true },
     { key: 'd', label: 'device auths', action: () => runMenu(deviceAuthMenu), submenu: true },
     { key: 'o', label: 'ecosystem (no auth required)', action: () => runMenu(ecosystemMenu), submenu: true },
+    { key: 'n', label: 'news, content & islands', action: () => runMenu(contentMenu), submenu: true },
   ],
 };
 
@@ -2156,7 +2641,9 @@ const lockerMenu: Menu = {
     { key: '1', label: 'view locker (enriched)', action: showLocker },
     { key: '2', label: 'equip cosmetic by name (REAL write)', action: editLocker },
     { key: '3', label: 'save current fit as preset (REAL write)', action: saveLockerPreset },
-    { key: '4', label: 'build preset from cosmetics (REAL write)', action: buildLockerPreset },
+    { key: '4', label: 'equip a saved preset (REAL write)', action: applyLockerPreset },
+    { key: '5', label: 'delete a saved preset (REAL write)', action: deleteLockerPreset },
+    { key: '6', label: 'recolour an item (REAL write)', action: colorLockerItem },
   ],
 };
 

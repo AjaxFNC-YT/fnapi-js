@@ -86,7 +86,9 @@ function headersToRecord(headers: Headers): Record<string, string> {
 }
 
 function looksLikeJson(text: string, contentType: string | undefined): boolean {
-  return contentType?.includes('json') === true || /^\s*[[{]/.test(text) || /^\s*"/.test(text);
+  if (contentType?.includes('json') === true) return true;
+  if (contentType && !contentType.startsWith('application/octet-stream')) return false;
+  return /^\s*[[{]/.test(text) || /^\s*"/.test(text);
 }
 
 function parseBody(text: string, contentType: string | undefined, url: string): unknown {
@@ -130,6 +132,7 @@ export class RestClient {
   private readonly defaultQuery: QueryParams;
   private readonly retry: ResolvedRetryOptions;
   private readonly cacheEnabled: boolean;
+  private readonly inflight = new Map<string, Promise<ApiResponse<unknown>>>();
   private readonly fetchImpl: FetchLike;
   private apiKeyValue: string | null;
 
@@ -203,8 +206,36 @@ export class RestClient {
     path: string,
     options: RequestOptions = {},
   ): Promise<ApiResponse<T>> {
+    if (method !== 'GET' || options.signal) return this.perform<T>(method, path, options);
+    const key = `${this.buildUrl(path, options.query)} ${JSON.stringify(options.headers ?? {})}`;
+    const shared = this.inflight.get(key);
+    if (shared) {
+      const response = await shared;
+      return new ApiResponse<T>({
+        status: response.status,
+        headers: { ...response.headers },
+        body: snapshot(response.body) as T,
+        url: response.url,
+        method: response.method,
+        cached: response.cached,
+      });
+    }
+    const pending = this.perform<unknown>(method, path, options).finally(() => {
+      this.inflight.delete(key);
+    });
+    this.inflight.set(key, pending);
+    return (await pending) as ApiResponse<T>;
+  }
+
+  private async perform<T>(
+    method: HttpMethod,
+    path: string,
+    options: RequestOptions,
+  ): Promise<ApiResponse<T>> {
     const url = this.buildUrl(path, options.query);
-    const useCache = method === 'GET' && (options.cache ?? this.cacheEnabled);
+    const cacheTtl = typeof options.cache === 'object' ? options.cache.ttl : undefined;
+    const useCache =
+      method === 'GET' && (typeof options.cache === 'object' || (options.cache ?? this.cacheEnabled));
     const cacheKey = `${method} ${url}`;
 
     if (useCache) {
@@ -270,6 +301,7 @@ export class RestClient {
               url,
               method,
             }),
+            cacheTtl,
           );
         }
 

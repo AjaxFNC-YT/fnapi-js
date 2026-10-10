@@ -485,6 +485,16 @@ describe('RestClient body parsing', () => {
     expect(response.body).toBe('plain text payload');
   });
 
+  it('keeps a text/plain body that starts with a bracket as text', async () => {
+    const ini = '[/Script/FortniteGame.FortGameData]\nKey=Value';
+    const mock = createMockFetch({ status: 200, body: ini, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+    const client = new RestClient({ fetch: mock.fetch });
+
+    const response = await client.get('/v1/cloudstorage/DefaultGame.ini');
+
+    expect(response.body).toBe(ini);
+  });
+
   it('returns null for an empty body', async () => {
     const mock = createMockFetch({ status: 200 });
     const client = new RestClient({ fetch: mock.fetch });

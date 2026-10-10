@@ -1,12 +1,18 @@
 import { FnccEndpoint } from './base.js';
 import { FnccRoutes } from '../routes.js';
+import { ValidationError } from '../../core/errors.js';
 import type { QueryParams } from '../../core/types.js';
-import type { FnccAssetsListOptions, FnccBaseOptions, FnccPageOptions } from '../options.js';
+import type {
+  FnccAssetPathsOptions,
+  FnccAssetsListOptions,
+  FnccBaseOptions,
+  FnccPageOptions,
+} from '../options.js';
 import type {
   FnccArchive,
   FnccAssetEntry,
-  FnccAssetExport,
   FnccAssetPackage,
+  FnccFixedPath,
   FnccPage,
 } from '../types.js';
 
@@ -30,9 +36,30 @@ export class FnccAssetsEndpoint extends FnccEndpoint {
     return this.fetchRaw<FnccPage<FnccAssetEntry>>(FnccRoutes.assetsSearch(), options, params);
   }
 
-  async exports(path: string, options?: FnccBaseOptions): Promise<FnccAssetExport[]> {
+  async paths(options?: FnccAssetPathsOptions): Promise<FnccPage<string>> {
+    return this.fetchRaw<FnccPage<string>>(FnccRoutes.assetsPaths(), options, this.pathsQuery(options));
+  }
+
+  pathsTextUrl(options?: FnccAssetPathsOptions): string {
+    return this.buildUrl(FnccRoutes.assetsPaths(), { ...this.pathsQuery(options), format: 'text' });
+  }
+
+  async fixPath(path: string, options?: FnccBaseOptions): Promise<FnccFixedPath> {
     this.requireString(path, 'path');
-    return this.fetchRaw<FnccAssetExport[]>(FnccRoutes.assetsExports(), options, { path });
+    return this.fetchRaw<FnccFixedPath>(FnccRoutes.assetsFixPath(), options, { path });
+  }
+
+  async fixPaths(paths: string[], options?: FnccBaseOptions): Promise<FnccFixedPath[]> {
+    if (!Array.isArray(paths) || paths.length === 0) {
+      throw new ValidationError('"paths" must be a non-empty array of strings', 'paths');
+    }
+    paths.forEach((path, index) => this.requireString(path, `paths[${index}]`));
+    return this.postRaw<FnccFixedPath[]>(FnccRoutes.assetsFixPath(), paths, options);
+  }
+
+  async exports(path: string, options?: FnccBaseOptions): Promise<string[]> {
+    this.requireString(path, 'path');
+    return this.fetchRaw<string[]>(FnccRoutes.assetsExports(), options, { path });
   }
 
   async json<T = unknown>(path: string, name?: string, options?: FnccBaseOptions): Promise<T> {
@@ -58,6 +85,16 @@ export class FnccAssetsEndpoint extends FnccEndpoint {
 
   private listQuery(options: FnccAssetsListOptions | undefined): QueryParams {
     const query: QueryParams = {};
+    if (options?.prefix !== undefined) query['prefix'] = options.prefix;
+    if (options?.extension !== undefined) query['extension'] = options.extension;
+    if (options?.offset !== undefined) query['offset'] = options.offset;
+    if (options?.limit !== undefined) query['limit'] = options.limit;
+    return query;
+  }
+
+  private pathsQuery(options: FnccAssetPathsOptions | undefined): QueryParams {
+    const query: QueryParams = {};
+    if (options?.q !== undefined) query['q'] = options.q;
     if (options?.prefix !== undefined) query['prefix'] = options.prefix;
     if (options?.extension !== undefined) query['extension'] = options.extension;
     if (options?.offset !== undefined) query['offset'] = options.offset;

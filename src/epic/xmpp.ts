@@ -217,6 +217,7 @@ export class XmppClient extends TypedEmitter<XmppEventMap> {
   private everConnected = false;
   private manualDisconnect = false;
   private pingCounter = 0;
+  private lastInboundAt = 0;
 
   private connectPromise: Promise<void> | null = null;
   private connectResolve: (() => void) | null = null;
@@ -313,19 +314,29 @@ export class XmppClient extends TypedEmitter<XmppEventMap> {
     }, this.connectionTimeoutMs);
 
     socket.addEventListener('open', () => {
+      if (this.socket !== socket) return;
       this.sendRaw(this.openStanza());
     });
     socket.addEventListener('message', (event: { data: unknown }) => {
+      if (this.socket !== socket) return;
+      this.lastInboundAt = Date.now();
       this.handleIncoming(event.data);
     });
     socket.addEventListener('close', (event: { code?: number; reason?: string }) => {
+      if (this.socket !== socket) return;
       this.handleClose(event.code ?? 1006, event.reason ?? '');
     });
     socket.addEventListener('error', () => {
+      if (this.socket !== socket) return;
       this.emit('error', new Error('The XMPP WebSocket reported an error.'));
     });
 
     return this.connectPromise;
+  }
+
+  reconnect(): Promise<void> {
+    if (this.currentState === 'connected') this.dropSocket(4000, 'reconnect requested');
+    return this.connect();
   }
 
   async disconnect(): Promise<void> {
@@ -740,8 +751,13 @@ export class XmppClient extends TypedEmitter<XmppEventMap> {
 
   private startKeepalive(): void {
     this.teardownTimers();
+    this.lastInboundAt = Date.now();
     this.pingTimer = setInterval(() => {
       if (this.currentState !== 'connected') return;
+      if (Date.now() - this.lastInboundAt > this.pingIntervalMs * 2) {
+        this.dropSocket(4000, 'keepalive timeout');
+        return;
+      }
       try {
         this.ping();
       } catch {
@@ -769,10 +785,12 @@ export class XmppClient extends TypedEmitter<XmppEventMap> {
       this.connectTimer = null;
     }
     this.teardownTimers();
+    const socket = this.socket;
+    this.socket = null;
     if (this.currentState !== 'closed') {
       this.currentState = 'closed';
       try {
-        this.socket?.close(1000, 'connect failed');
+        socket?.close(1000, 'connect failed');
       } catch {
         // ignore
       }
@@ -783,6 +801,17 @@ export class XmppClient extends TypedEmitter<XmppEventMap> {
       this.emit('error', error);
     }
     this.maybeReconnect();
+  }
+
+  private dropSocket(code: number, reason: string): void {
+    const socket = this.socket;
+    this.socket = null;
+    try {
+      socket?.close(1000, reason);
+    } catch {
+      // the socket is already unusable
+    }
+    this.handleClose(code, reason);
   }
 
   private handleClose(code: number, reason: string): void {

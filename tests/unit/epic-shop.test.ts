@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { Shop, ShopEntry, Gifting } from '../../src/epic/shop.js';
+import { Shop, ShopEntry, Gifting, ShopError, parsePurchaseHistory, shopErrorReason } from '../../src/epic/shop.js';
+import { EpicApiError } from '../../src/epic/errors.js';
 import { ValidationError } from '../../src/core/errors.js';
 import type { EpicAuthSession } from '../../src/epic/session.js';
 import type { StorefrontCatalog } from '../../src/epic/shop.js';
@@ -56,19 +57,26 @@ function mockSession(): {
   mcp: ReturnType<typeof vi.fn>;
   byDisplayName: ReturnType<typeof vi.fn>;
   storefront: ReturnType<typeof vi.fn>;
+  eligibility: ReturnType<typeof vi.fn>;
 } {
   const mcp = vi.fn().mockResolvedValue({ profileRevision: 2, profileChanges: [] });
   const byDisplayName = vi
     .fn()
     .mockImplementation((name: string) => Promise.resolve({ id: 'a'.repeat(32), displayName: name }));
   const storefront = vi.fn().mockResolvedValue(catalog);
+  const eligibility = vi.fn().mockResolvedValue({
+    price: { currencyType: 'MtxCurrency', currencySubType: '', finalPrice: 1200, regularPrice: 1200 },
+    items: [{ templateId: 'AthenaCharacter:cid_028_athena_commando_f', quantity: 1 }],
+    ownership: [],
+  });
   const session = {
     accountId: 'ACC',
     mcpOperation: mcp,
     accountByDisplayName: byDisplayName,
     storefrontCatalog: storefront,
+    giftEligibility: eligibility,
   } as unknown as EpicAuthSession;
-  return { session, mcp, byDisplayName, storefront };
+  return { session, mcp, byDisplayName, storefront, eligibility };
 }
 
 describe('Shop parsing', () => {
@@ -199,5 +207,109 @@ describe('Gifting standalone', () => {
   it('rejects an empty gift target', async () => {
     const { session } = mockSession();
     await expect(new Gifting(session).gift('v2:/x', [])).rejects.toBeInstanceOf(ValidationError);
+  });
+});
+
+function epicError(errorCode: string, status = 400): EpicApiError {
+  return new EpicApiError(errorCode, {
+    status,
+    method: 'POST',
+    url: 'https://fngw-mcp-gc-livefn.ol.epicgames.com/x',
+    body: { errorCode, errorMessage: errorCode, numericErrorCode: 1, messageVars: [] },
+    headers: {},
+  });
+}
+
+describe('Shop errors and pre-checks', () => {
+  it('maps Epic error codes to shop error reasons', () => {
+    expect(shopErrorReason('errors.com.epicgames.modules.gameplayutils.not_enough_mtx')).toBe('not-enough-vbucks');
+    expect(shopErrorReason('errors.com.epicgames.modules.gamesubcatalog.receiver_will_not_accept_gifts')).toBe('gifts-disabled');
+    expect(shopErrorReason('errors.com.epicgames.modules.gamesubcatalog.gift_limit_reached')).toBe('gift-limit-reached');
+    expect(shopErrorReason('something.else')).toBe('unknown');
+  });
+
+  it('refuses a gift before sending it when a receiver is not eligible', async () => {
+    const { session, mcp, eligibility } = mockSession();
+    eligibility.mockRejectedValueOnce(epicError('errors.com.epicgames.modules.gamesubcatalog.purchase_not_allowed', 403));
+    const shop = new Shop(session, catalog);
+    const error = await shop.byOfferId('v2:/offer_renegade')!.gift('a'.repeat(32)).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ShopError);
+    expect((error as ShopError).reason).toBe('already-owned');
+    expect((error as ShopError).accountIds).toEqual(['a'.repeat(32)]);
+    expect(mcp).not.toHaveBeenCalled();
+  });
+
+  it('reports eligibility per receiver', async () => {
+    const { session, eligibility } = mockSession();
+    eligibility.mockRejectedValueOnce(epicError('errors.com.epicgames.modules.gamesubcatalog.gift_recipient_is_not_eligible_friend'));
+    const shop = new Shop(session, catalog);
+    const checks = await shop.byOfferId('v2:/offer_renegade')!.checkGift(['a'.repeat(32), 'b'.repeat(32)]);
+    expect(checks.map((check) => [check.eligible, check.reason])).toEqual([
+      [false, 'not-friends'],
+      [true, null],
+    ]);
+    expect(checks[1]?.price?.finalPrice).toBe(1200);
+  });
+
+  it('skips the pre-check on request and turns a rejected gift into a ShopError', async () => {
+    const { session, mcp, eligibility } = mockSession();
+    mcp.mockRejectedValueOnce(epicError('errors.com.epicgames.modules.gamesubcatalog.gift_limit_reached'));
+    const shop = new Shop(session, catalog);
+    const error = await shop
+      .byOfferId('v2:/offer_renegade')!
+      .gift('a'.repeat(32), { precheck: false })
+      .catch((caught: unknown) => caught);
+    expect(eligibility).not.toHaveBeenCalled();
+    expect(error).toMatchObject({ name: 'ShopError', reason: 'gift-limit-reached' });
+  });
+});
+
+describe('Purchasing', () => {
+  it('sends PurchaseCatalogEntry with the entry price times quantity', async () => {
+    const { session, mcp } = mockSession();
+    mcp.mockResolvedValueOnce({
+      profileRevision: 3,
+      profileChanges: [],
+      notifications: [
+        { type: 'CatalogPurchase', lootResult: { items: [{ itemType: 'AthenaCharacter:cid_028', itemGuid: 'g', itemProfile: 'athena', quantity: 1 }] } },
+      ],
+    });
+    const shop = new Shop(session, catalog);
+    const result = await shop.purchase('v2:/offer_renegade', { quantity: 2 });
+    const [operation, options] = mcp.mock.calls[0]!;
+    expect(operation).toBe('PurchaseCatalogEntry');
+    expect(options.payload).toMatchObject({ offerId: 'v2:/offer_renegade', purchaseQuantity: 2, expectedTotalPrice: 2400 });
+    expect(result.items).toEqual([{ templateId: 'AthenaCharacter:cid_028', quantity: 1, itemGuid: 'g', profileId: 'athena' }]);
+  });
+
+  it('turns not enough V-Bucks into a ShopError', async () => {
+    const { session, mcp } = mockSession();
+    mcp.mockRejectedValueOnce(epicError('errors.com.epicgames.modules.gameplayutils.not_enough_mtx'));
+    const shop = new Shop(session, catalog);
+    await expect(shop.purchase('v2:/offer_renegade')).rejects.toMatchObject({ reason: 'not-enough-vbucks' });
+  });
+
+  it('parses the purchase history newest first', () => {
+    const history = parsePurchaseHistory({
+      mtx_purchase_history: {
+        refundCredits: 2,
+        refundsUsed: 13,
+        tokenRefreshReferenceTime: '2026-09-28T00:00:00.000Z',
+        purchases: [
+          { purchaseId: 'old', offerId: 'o1', purchaseDate: '2026-01-01T00:00:00.000Z', totalMtxPaid: 800, lootResult: [] },
+          {
+            purchaseId: 'new',
+            offerId: 'o2',
+            purchaseDate: '2026-09-28T00:13:49.985Z',
+            totalMtxPaid: 1200,
+            refundType: 'UserRefundable',
+            lootResult: [{ itemType: 'AthenaPickaxe:pickaxe_id_376_fncs', quantity: 1, itemGuid: 'g', itemProfile: 'athena' }],
+          },
+        ],
+      },
+    });
+    expect(history).toMatchObject({ refundCredits: 2, refundsUsed: 13 });
+    expect(history.purchases.map((purchase) => purchase.purchaseId)).toEqual(['new', 'old']);
+    expect(history.purchases[0]?.items[0]?.templateId).toBe('AthenaPickaxe:pickaxe_id_376_fncs');
   });
 });

@@ -414,7 +414,7 @@ Mints an **Epic Account Services (EAS)** token via `POST /epic/oauth/v2/token` (
 lockerItems(options?: { deploymentId?: string; signal?: AbortSignal }): Promise<LockerItemsResponse>
 ```
 
-Reads the raw **EOS Locker Service** `locker/v4` items — the `activeLoadoutGroup` (equipped character, emotes, vehicle, jam, …) and saved presets. [`Locker`](/epic/locker) uses this under the hood to fill the equipped loadout for migrated accounts; call it directly if you want the raw group.
+Reads the raw **EOS Locker Service** `locker/v4` items — the `activeLoadoutGroup` (equipped character, emotes, vehicle, jam, …), saved `loadoutGroupPresets` and per-section `loadoutPresets`. [`Locker`](/epic/locker) is built on this and the other locker calls (`lockerCosmetics`, `setActiveLoadoutGroup`, the preset calls, `setCompanionName`, `lockInImmutableItem`); call them directly if you want the raw data.
 
 **Returns:** `Promise<LockerItemsResponse>`
 
@@ -470,11 +470,11 @@ console.log(status.status, entry?.last_online);
 <Badge type="info" text="method" />
 
 ```ts
-setCustomStatus(status: string, options?: { onlineType?: string; signal?: AbortSignal }): Promise<void>
-clearCustomStatus(options?: { signal?: AbortSignal }): Promise<void>
+setCustomStatus(status: string, options?: { onlineType?: string; signal?: AbortSignal }): Promise<EosOwnPresence | null>
+clearCustomStatus(options?: { signal?: AbortSignal }): Promise<EosOwnPresence | null>
 ```
 
-Publish the friend-facing status that modern Fortnite renders **in-game** (the line that otherwise reads *"In the launcher"*). This runs over **EOS presence**, not XMPP — the text is sent as `activity.value` on a presence `PATCH` bound to your live connect session, so it opens (or reuses) `connectEvents` for you and holds only while that session stays open. It re-applies on reconnect; `clearCustomStatus`, `disconnectEvents`, or `logout` removes it. See [live events & presence](/epic/chat#in-game-custom-status).
+Publish the friend-facing status that modern Fortnite renders **in-game** (the line that otherwise reads *"In the launcher"*). This runs over **EOS presence**, not XMPP — the text is sent as `activity.value` on a presence `PATCH` bound to your live connect session, so it opens (or reuses) `connectEvents` for you and holds only while that session stays open. No WebSocket setup is needed on Node — the `ws` package is picked up automatically. Both calls resolve to the presence Epic stored. The status is re-applied on every reconnect and recovered when Epic reports the connection gone; `clearCustomStatus`, `disconnectEvents`, or `logout` removes it. See [live events & presence](/epic/chat#in-game-custom-status).
 
 ```ts
 await session.setCustomStatus('Playing with fnapi-js 🚀');
@@ -528,6 +528,37 @@ await session.setMtxPlatform('PSN');
 const stats = await session.userStats();
 ```
 
+## Account actions
+<Badge type="info" text="method" />
+
+```ts
+supportACreator(): Promise<{ code: string; setAt: string | null; affiliateId: string | null } | null>
+setSupportACreator(code: string): Promise<MCPResponse>
+claimMfaReward(options?: { stw?: boolean }): Promise<MCPResponse>
+markBansViewed(): Promise<MCPResponse>
+skipTutorial(): Promise<MCPResponse>
+giftEligibility(recipientId: string, offerId: string): Promise<GiftEligibilityResponse>
+```
+
+| Method | Description |
+| --- | --- |
+| `supportACreator` / `setSupportACreator` | Read or set the Support-a-Creator code (`SetAffiliateName`). An unknown code throws a `ShopError` with reason `invalid-creator`. |
+| `claimMfaReward` | Claim the two-factor reward (`ClaimMfaEnabled`); pass `stw: true` for the Save the World version. |
+| `markBansViewed` | Acknowledge matchmaking ban notices (`SetMatchmakingBansViewed`). |
+| `skipTutorial` | Skip the Save the World tutorial (`SkipTutorial` on `campaign`). |
+| `giftEligibility` | The raw gift check behind `checkGift`. |
+
+Purchases, refunds and purchase history are covered in [Shop & Gifting](/epic/shop#purchases-refunds).
+
+## Tournaments, islands, quests & locker
+
+These session methods have their own pages:
+
+- [Tournaments](/epic/tournaments): `tournaments`, `tournamentLeaderboard`, `tournamentScores`, `tournamentHistory`, `tournamentPlayer`, `tournamentTokens`, `tournamentData`
+- [Islands & Links](/epic/links): `island`, `islands`, `islandRelated`, `islandVersions`, `creatorIslands`, `myIslands`
+- [Quests](/epic/quests): `questProgress`, `questLogin`, `claimQuestReward`, `rerollDailyQuest`, `trackQuests`, `pinStwQuests`
+- [Locker](/epic/locker#raw-session-calls): `lockerCosmetics`, `setActiveLoadoutGroup`, the preset calls, `setCompanionName`, `lockInImmutableItem`
+
 ## Cloud storage
 <Badge type="info" text="method" />
 
@@ -567,6 +598,30 @@ Read and append to the account's tracked **playtime** artifacts. `playtimeAll` r
 ```ts
 for (const record of await session.playtimeAll())
   console.log(record.artifactId, record.totalTime);
+```
+
+## Library
+<Badge type="info" text="method" />
+
+```ts
+library(options?: LibraryItemsOptions): Promise<LibraryItemsResponse>
+libraryAll(options?: LibraryAllItemsOptions): Promise<LibraryRecord[]>
+libraryStateTokenStatus(stateToken: string, options?: LibraryRequestOptions): Promise<boolean>
+libraryCollections(options?: LibraryRequestOptions): Promise<LibraryCollection[]>
+libraryCollectionItems(collectionId: string, options?: LibraryRequestOptions): Promise<LibraryCollectionItem[]>
+createLibraryCollection(name: string, options?: LibraryRequestOptions): Promise<LibraryCollection>
+updateLibraryCollection(collectionId: string, name: string, options?: LibraryRequestOptions): Promise<LibraryCollection>
+deleteLibraryCollection(collectionId: string, options?: LibraryRequestOptions): Promise<void>
+addLibraryCollectionItem(collectionId: string, item: LibraryCollectionItem, options?: LibraryRequestOptions): Promise<LibraryCollection>
+removeLibraryCollectionItem(collectionId: string, item: LibraryCollectionItem, options?: LibraryRequestOptions): Promise<LibraryCollection>
+launcherLibrary(options?: LauncherLibraryItemsOptions): Promise<LauncherLibraryResponse>
+```
+
+Read the account's **Epic Games Library** — every game and subscription the user owns, plus the collections that group them. `library` reads one page; `libraryAll` auto-paginates the whole library; the `*Collection*` methods read and manage user collections. Like playtime, the library service needs a **launcherApp** token, which the session mints and caches for you automatically. Account-bound sessions only. See [`LibraryManager`](/epic/library) for the full surface. `launcherLibrary` is the deprecated launcher-service proxy, kept for parity.
+
+```ts
+for (const record of await session.libraryAll())
+  console.log(record.sandboxName ?? record.namespace, record.recordType);
 ```
 
 ## Avatars
@@ -643,3 +698,19 @@ const summary = await session.statusSummary();
 console.log(summary.status.description);
 for (const incident of await session.statusIncidents()) console.log(incident.name);
 ```
+
+## Content, build & islands
+<Badge type="info" text="method" />
+
+```ts
+motds(options?: MotdOptions): Promise<MotdItem[]>
+fortniteVersion(options?): Promise<FortniteVersion>
+fortniteBuild(options?: LauncherBuildOptions): Promise<FortniteBuild>
+launcherBuild(options?: LauncherBuildOptions): Promise<LauncherBuild>
+launcherAssets(options?): Promise<LauncherAsset[]>
+islandPackage(linkCode: string, options?): Promise<CookedContentPackage>
+islandKeys(linkCode: string, options?): Promise<IslandKey[]>
+launchIsland(linkCode: string, options?): Promise<IslandLaunchResult>
+```
+
+The personalised lobby MOTDs, the server and client Fortnite builds, launcher assets, and UEFN island packages, AES keys and launches. The launcherApp and Valkyrie (UEFN) tokens these need are minted from the session and cached automatically. See [Content Pages & MOTDs](/epic/content), [Launcher & Build Info](/epic/launcher) and [Islands](/epic/content-service).

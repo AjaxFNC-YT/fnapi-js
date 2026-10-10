@@ -73,7 +73,9 @@ A `TypedEmitter` over `LiveEventMap`. Register listeners with `on` / `once` / `o
 
 | Method | Description |
 | --- | --- |
-| `start()` | Connect + seed. Called for you by `session.live()`; idempotent. |
+| `start()` | Connect + seed. Called for you by `session.live()`; idempotent, and safe to call again if a previous start failed. |
+| `stop()` | Detach from the XMPP / connect channels and clear live state. `session.disconnectLive()` calls it for you. |
+| `running` | `true` between a successful `start()` and `stop()`. |
 | `refreshParty()` | Force a re-fetch of the current party. |
 | `refreshFriends()` | Rebuild the friend cache from the friends list. |
 | `createParty(config?)` | Create a fresh party and set it as `bot.party`. |
@@ -92,6 +94,8 @@ A `TypedEmitter` over `LiveEventMap`. Register listeners with `on` / `once` / `o
 | --- | --- | --- |
 | `connected` | `void` | Both transports are up and state is seeded. |
 | `disconnected` | `{ code, reason }` | The XMPP socket closes. |
+| `reconnecting` | `{ attempt, delay }` | XMPP scheduled an auto-reconnect after an unexpected drop. |
+| `reconnected` | `void` | XMPP is back and the party / friend state has been re-seeded. |
 | `error` | `Error` | A non-fatal client/transport error. |
 | `notification` | `DecodedNotification` | Every decoded XMPP notification (before the specific event). |
 | `party:invite` | `PartyInviteEvent` | Someone invites/pings you into their party. |
@@ -183,20 +187,14 @@ interface PartyMemberEvent {
 
 `decodeNotification(body)`, the notification-type constants (`PARTY_NOTIFICATION_PREFIX`, `FRIEND_NOTIFICATION_TYPE`, `FRIENDSHIP_REMOVE_TYPE`) and the `DecodedNotification` union are exported for advanced use.
 
-## Node without a global WebSocket
+## WebSockets
 
-`LiveClient` connects the same [`XmppClient`](/epic/xmpp) and [`ConnectClient`](/epic/chat) a session builds, so it inherits their injectable WebSocket factories. On Node without a `WebSocket` global, pass one backed by [`ws`](https://www.npmjs.com/package/ws) through `options.connect` / `options.xmpp`. As with the connect stream, do **not** forward the `protocols` argument to `ws`:
+`LiveClient` connects the same [`XmppClient`](/epic/xmpp) and [`ConnectClient`](/epic/chat) a session builds. XMPP uses the global `WebSocket` (Node 22+, browsers); the connect stream needs header support and loads the [`ws`](https://www.npmjs.com/package/ws) package automatically, so `await session.live()` works with no options on Node. To use your own transports, pass factories through `options.xmpp` / `options.connect`, or set `connectWebSocket` once on the `EpicGamesClient`. When the connect stream cannot attach, `start()` still succeeds over XMPP and emits `error` — set `connectEvents: false` to skip it and read presence through [`session.friendPresences()`](/epic/presence#session-friendpresences).
 
 ```ts
 import WebSocket from 'ws';
 
-const factory = (url, _protocols, options) =>
-  new WebSocket(url, { headers: options?.headers }) as never;
-
 const bot = await session.live({
-  connect: { webSocket: factory },
-  xmpp: { webSocket: factory },
+  xmpp: { webSocket: (url, protocols) => new WebSocket(url, protocols) as never },
 });
 ```
-
-The `ws` factory forwards `options.headers`, so it carries the bearer the connect stream needs. A factory that drops headers — a browser's native `WebSocket` wrapped as a factory, for example — makes `ConnectClient` throw a `ConfigurationError` at construction rather than connecting without auth. In that case either supply a header-capable factory or set `connectEvents: false` and read presence through [`session.friendPresences()`](/epic/presence#session-friendpresences).

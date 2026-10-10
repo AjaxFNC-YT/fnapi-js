@@ -1,10 +1,98 @@
 import { ValidationError } from '../core/errors.js';
+import { EpicApiError } from './errors.js';
 import type { MCPResponse } from './mcp.js';
 import type { EpicAuthSession } from './session.js';
 
 export const GIFT_CURRENCY = 'MtxCurrency';
 export const GIFT_GAME_CONTEXT = 'Frontend.CatabaScreen';
 export const GIFT_DEFAULT_CURRENCY_SUBTYPE = 'Currency';
+export const PURCHASE_GAME_CONTEXT = 'Frontend.CatabaScreen';
+export const REFUND_GAME_CONTEXT = 'Frontend.AthenaLobby';
+
+export const ShopErrorReason = {
+  NotEnoughVbucks: 'not-enough-vbucks',
+  AlreadyOwned: 'already-owned',
+  NotFriends: 'not-friends',
+  GiftsDisabled: 'gifts-disabled',
+  RecipientNotEligible: 'recipient-not-eligible',
+  GiftLimitReached: 'gift-limit-reached',
+  OfferUnavailable: 'offer-unavailable',
+  RefundUnavailable: 'refund-unavailable',
+  InvalidCreator: 'invalid-creator',
+  Unknown: 'unknown',
+} as const;
+
+export type ShopErrorReason = (typeof ShopErrorReason)[keyof typeof ShopErrorReason];
+
+const SHOP_ERROR_REASONS: Record<string, ShopErrorReason> = {
+  'errors.com.epicgames.modules.gameplayutils.not_enough_mtx': 'not-enough-vbucks',
+  'errors.com.epicgames.modules.gamesubcatalog.cannot_afford_purchase': 'not-enough-vbucks',
+  'errors.com.epicgames.modules.gamesubcatalog.purchase_not_allowed': 'already-owned',
+  'errors.com.epicgames.modules.gamesubcatalog.receiver_owns_item_from_bundle': 'already-owned',
+  'errors.com.epicgames.ecommerce.orderprocessor.purchase_limit_error': 'already-owned',
+  'errors.com.epicgames.modules.gamesubcatalog.gift_recipient_is_not_eligible_friend': 'not-friends',
+  'errors.com.epicgames.friends.friendship_not_found': 'not-friends',
+  'errors.com.epicgames.friends.invalid_friendship': 'not-friends',
+  'errors.com.epicgames.modules.gamesubcatalog.receiver_will_not_accept_gifts': 'gifts-disabled',
+  'errors.com.epicgames.modules.gamesubcatalog.gift_recipient_not_eligible': 'recipient-not-eligible',
+  'errors.com.epicgames.modules.gamesubcatalog.gift_limit_reached': 'gift-limit-reached',
+  'errors.com.epicgames.modules.gamesubcatalog.catalog_out_of_date': 'offer-unavailable',
+  'errors.com.epicgames.modules.gamesubcatalog.no_history': 'refund-unavailable',
+  'errors.com.epicgames.modules.gamesubcatalog.refund_not_permitted': 'refund-unavailable',
+  'errors.com.epicgames.modules.gamesubcatalog.already_rolled_back': 'refund-unavailable',
+  'errors.com.epicgames.modules.gamesubcatalog.refund_failed': 'refund-unavailable',
+  'errors.com.epicgames.fortnite.invalid_affiliate': 'invalid-creator',
+  'errors.com.epicgames.ecommerce.affiliate.not_found': 'invalid-creator',
+};
+
+const SHOP_ERROR_MESSAGES: Record<ShopErrorReason, string> = {
+  'not-enough-vbucks': 'Not enough V-Bucks for this purchase.',
+  'already-owned': 'The account already owns this item.',
+  'not-friends': 'Gifts can only be sent to friends of at least 48 hours.',
+  'gifts-disabled': 'The receiver has turned off receiving gifts.',
+  'recipient-not-eligible': 'The receiver is not eligible to receive this gift.',
+  'gift-limit-reached': 'The daily gift limit (5 per 24 hours) has been reached.',
+  'offer-unavailable': 'This offer is no longer in the shop.',
+  'refund-unavailable': 'This purchase cannot be refunded.',
+  'invalid-creator': 'That Support-a-Creator code does not exist or is not active.',
+  unknown: 'The request was rejected by Epic.',
+};
+
+export class ShopError extends Error {
+  public override readonly name: string = 'ShopError';
+  readonly reason: ShopErrorReason;
+  readonly errorCode: string | null;
+  readonly offerId: string | null;
+  readonly accountIds: string[];
+
+  constructor(
+    reason: ShopErrorReason,
+    init: { message?: string; errorCode?: string | null; offerId?: string | null; accountIds?: string[]; cause?: unknown } = {},
+  ) {
+    super(init.message ?? SHOP_ERROR_MESSAGES[reason], init.cause !== undefined ? { cause: init.cause } : undefined);
+    this.reason = reason;
+    this.errorCode = init.errorCode ?? null;
+    this.offerId = init.offerId ?? null;
+    this.accountIds = init.accountIds ?? [];
+  }
+}
+
+export function shopErrorReason(errorCode: string | null | undefined): ShopErrorReason {
+  return (errorCode && SHOP_ERROR_REASONS[errorCode]) || 'unknown';
+}
+
+export function toShopError(error: unknown, context: { offerId?: string; accountIds?: string[] } = {}): unknown {
+  if (!(error instanceof EpicApiError)) return error;
+  const reason = shopErrorReason(error.errorCode);
+  const detail = reason === 'unknown' ? ` (${error.message})` : '';
+  return new ShopError(reason, {
+    message: `${SHOP_ERROR_MESSAGES[reason]}${detail}`,
+    errorCode: error.errorCode ?? null,
+    offerId: context.offerId ?? null,
+    accountIds: context.accountIds ?? [],
+    cause: error,
+  });
+}
 
 const ACCOUNT_ID_PATTERN = /^[0-9a-f]{32}$/i;
 
@@ -89,7 +177,54 @@ export interface GiftOptions {
   priceIndex?: number;
   currencySubType?: string;
   price?: number;
+  precheck?: boolean;
   signal?: AbortSignal;
+}
+
+export interface GiftEligibility {
+  accountId: string;
+  offerId: string;
+  eligible: boolean;
+  reason: ShopErrorReason | null;
+  message: string | null;
+  price: ShopPrice | null;
+  items: ShopItem[];
+}
+
+export interface PurchaseOptions {
+  quantity?: number;
+  priceIndex?: number;
+  price?: number;
+  currency?: string;
+  currencySubType?: string;
+  gameContext?: string;
+  signal?: AbortSignal;
+}
+
+export interface PurchaseResult {
+  offerId: string;
+  quantity: number;
+  totalPrice: number;
+  items: Array<{ templateId: string; quantity: number; itemGuid: string | null; profileId: string | null }>;
+  response: MCPResponse;
+}
+
+export interface PurchaseRecord {
+  purchaseId: string;
+  offerId: string;
+  purchaseDate: string;
+  totalMtxPaid: number;
+  freeRefundEligible: boolean;
+  refundType: string | null;
+  items: Array<{ templateId: string; quantity: number; itemGuid: string | null; profileId: string | null }>;
+  raw: Record<string, unknown>;
+}
+
+export interface PurchaseHistory {
+  refundCredits: number;
+  refundsUsed: number;
+  tokenRefreshReferenceTime: string | null;
+  purchases: PurchaseRecord[];
 }
 
 export interface GiftResult {
@@ -203,6 +338,49 @@ export class ShopEntry {
   gift(target: GiftTarget, options: GiftOptions = {}): Promise<GiftResult> {
     return this.gifting.giftEntry(this, target, options);
   }
+
+  checkGift(target: GiftTarget, options: { signal?: AbortSignal } = {}): Promise<GiftEligibility[]> {
+    return this.gifting.checkEligibility(this.offerId, target, options);
+  }
+
+  purchase(options: PurchaseOptions = {}): Promise<PurchaseResult> {
+    return this.gifting.purchaseEntry(this, options);
+  }
+}
+
+function lootItems(value: unknown): PurchaseResult['items'] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object')
+    .map((entry) => ({
+      templateId: typeof entry['itemType'] === 'string' ? entry['itemType'] : String(entry['templateId'] ?? ''),
+      quantity: typeof entry['quantity'] === 'number' ? entry['quantity'] : 1,
+      itemGuid: typeof entry['itemGuid'] === 'string' ? entry['itemGuid'] : null,
+      profileId: typeof entry['itemProfile'] === 'string' ? entry['itemProfile'] : null,
+    }));
+}
+
+export function parsePurchaseHistory(stats: Record<string, unknown>): PurchaseHistory {
+  const history = (stats['mtx_purchase_history'] ?? {}) as Record<string, unknown>;
+  const purchases = Array.isArray(history['purchases']) ? (history['purchases'] as Record<string, unknown>[]) : [];
+  return {
+    refundCredits: typeof history['refundCredits'] === 'number' ? history['refundCredits'] : 0,
+    refundsUsed: typeof history['refundsUsed'] === 'number' ? history['refundsUsed'] : 0,
+    tokenRefreshReferenceTime:
+      typeof history['tokenRefreshReferenceTime'] === 'string' ? history['tokenRefreshReferenceTime'] : null,
+    purchases: purchases
+      .map((purchase) => ({
+        purchaseId: String(purchase['purchaseId'] ?? ''),
+        offerId: String(purchase['offerId'] ?? ''),
+        purchaseDate: String(purchase['purchaseDate'] ?? ''),
+        totalMtxPaid: typeof purchase['totalMtxPaid'] === 'number' ? purchase['totalMtxPaid'] : 0,
+        freeRefundEligible: purchase['freeRefundEligible'] === true,
+        refundType: typeof purchase['refundType'] === 'string' ? purchase['refundType'] : null,
+        items: lootItems(purchase['lootResult']),
+        raw: purchase,
+      }))
+      .sort((a, b) => b.purchaseDate.localeCompare(a.purchaseDate)),
+  };
 }
 
 export class Gifting {
@@ -251,6 +429,115 @@ export class Gifting {
     return this.giftEntries(entries, target, options);
   }
 
+  async checkEligibility(
+    offer: string | ShopEntry,
+    target: GiftTarget,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<GiftEligibility[]> {
+    const offerId = offer instanceof ShopEntry ? offer.offerId : offer;
+    if (typeof offerId !== 'string' || offerId.length === 0) {
+      throw new ValidationError('"offerId" is required and must be a non-empty string', 'offerId');
+    }
+    const receivers = await this.resolveTargets(target, options.signal);
+    const results: GiftEligibility[] = [];
+    for (const accountId of receivers) {
+      try {
+        const data = await this.session.giftEligibility(accountId, offerId, options);
+        results.push({
+          accountId,
+          offerId,
+          eligible: true,
+          reason: null,
+          message: null,
+          price: data.price ? normalizePrice(data.price) : null,
+          items: (data.items ?? [])
+            .filter((grant) => typeof grant.templateId === 'string')
+            .map((grant) => ({ templateId: grant.templateId as string, quantity: grant.quantity ?? 1 })),
+        });
+      } catch (error) {
+        if (!(error instanceof EpicApiError)) throw error;
+        const shopError = toShopError(error, { offerId, accountIds: [accountId] }) as ShopError;
+        results.push({
+          accountId,
+          offerId,
+          eligible: false,
+          reason: shopError.reason,
+          message: shopError.message,
+          price: null,
+          items: [],
+        });
+      }
+    }
+    return results;
+  }
+
+  purchase(offerId: string, options: PurchaseOptions & { price: number }): Promise<PurchaseResult> {
+    if (typeof offerId !== 'string' || offerId.length === 0) {
+      throw new ValidationError('"offerId" is required and must be a non-empty string', 'offerId');
+    }
+    return this.sendPurchase(
+      {
+        offerId,
+        currency: options.currency ?? GIFT_CURRENCY,
+        currencySubType: options.currencySubType ?? '',
+        unitPrice: options.price,
+      },
+      options,
+    );
+  }
+
+  purchaseEntry(entry: ShopEntry, options: PurchaseOptions = {}): Promise<PurchaseResult> {
+    if (!(entry instanceof ShopEntry)) {
+      throw new ValidationError('"entry" must be a ShopEntry', 'entry');
+    }
+    const price = entry.priceAt(options.priceIndex ?? 0);
+    if (!price) {
+      throw new ValidationError(`Shop entry "${entry.offerId}" has no price to purchase with`, 'entry');
+    }
+    return this.sendPurchase(
+      {
+        offerId: entry.offerId,
+        currency: options.currency ?? (price.currencyType || GIFT_CURRENCY),
+        currencySubType: options.currencySubType ?? price.currencySubType,
+        unitPrice: options.price ?? price.finalPrice,
+      },
+      options,
+    );
+  }
+
+  private async sendPurchase(
+    offer: { offerId: string; currency: string; currencySubType: string; unitPrice: number },
+    options: PurchaseOptions,
+  ): Promise<PurchaseResult> {
+    const quantity = options.quantity ?? 1;
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      throw new ValidationError('"quantity" must be a positive integer', 'quantity');
+    }
+    const totalPrice = offer.unitPrice * quantity;
+    try {
+      const response = await this.session.mcpOperation('PurchaseCatalogEntry', {
+        profileId: 'common_core',
+        payload: {
+          offerId: offer.offerId,
+          purchaseQuantity: quantity,
+          currency: offer.currency,
+          currencySubType: offer.currencySubType,
+          expectedTotalPrice: totalPrice,
+          gameContext: options.gameContext ?? PURCHASE_GAME_CONTEXT,
+        },
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      const notifications = Array.isArray(response.notifications) ? response.notifications : [];
+      const loot = notifications.flatMap((notification) => {
+        const lootResult = (notification as { lootResult?: { items?: unknown } }).lootResult;
+        return lootItems(lootResult?.items);
+      });
+      return { offerId: offer.offerId, quantity, totalPrice, items: loot, response };
+    } catch (error) {
+      throw toShopError(error, { offerId: offer.offerId });
+    }
+  }
+
   setReceiveGiftsEnabled(
     enabled: boolean,
     options: { signal?: AbortSignal } = {},
@@ -291,6 +578,18 @@ export class Gifting {
     if (receivers.length === 0) {
       throw new ValidationError('A gift needs at least one receiver', 'target');
     }
+    if (options.precheck !== false) {
+      const checks = await this.checkEligibility(descriptor.offerId, receivers, options.signal ? { signal: options.signal } : {});
+      const failed = checks.filter((check) => !check.eligible);
+      if (failed.length > 0) {
+        const first = failed[0]!;
+        throw new ShopError(first.reason ?? 'unknown', {
+          message: failed.map((check) => `${check.accountId}: ${check.message}`).join('; '),
+          offerId: descriptor.offerId,
+          accountIds: failed.map((check) => check.accountId),
+        });
+      }
+    }
     const totalPrice = descriptor.unitPrice * receivers.length;
     const payload = {
       offerId: descriptor.offerId,
@@ -302,11 +601,16 @@ export class Gifting {
       giftWrapTemplateId: options.giftWrapTemplateId ?? '',
       personalMessage: options.message ?? '',
     };
-    const response = await this.session.mcpOperation('GiftCatalogEntry', {
-      profileId: 'common_core',
-      payload,
-      ...(options.signal ? { signal: options.signal } : {}),
-    });
+    let response: MCPResponse;
+    try {
+      response = await this.session.mcpOperation('GiftCatalogEntry', {
+        profileId: 'common_core',
+        payload,
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+    } catch (error) {
+      throw toShopError(error, { offerId: descriptor.offerId, accountIds: receivers });
+    }
     return {
       offerId: descriptor.offerId,
       receiverAccountIds: receivers,
@@ -412,6 +716,14 @@ export class Shop {
         entry.devName.toLowerCase().includes(needle) ||
         (entry.displayName ?? '').toLowerCase().includes(needle),
     );
+  }
+
+  purchase(entry: ShopEntry | string, options: PurchaseOptions = {}): Promise<PurchaseResult> {
+    const resolved = entry instanceof ShopEntry ? entry : this.find(entry);
+    if (!resolved) {
+      throw new ValidationError(`No shop entry matches "${String(entry)}"`, 'entry');
+    }
+    return this.giftingHelper.purchaseEntry(resolved, options);
   }
 
   gift(

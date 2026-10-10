@@ -52,10 +52,26 @@ export interface SignedMessage {
   sig: string;
 }
 
+export interface EosPresenceNamespace {
+  productId?: string;
+  appId?: string;
+  status: string;
+  activity?: { value?: string };
+  ns: string;
+  props: Record<string, string>;
+  conns: Array<{ id: string; props: Record<string, string> }>;
+}
+
+export interface EosOwnPresence {
+  accountId: string;
+  status: string;
+  perNs: EosPresenceNamespace[];
+}
+
 export interface ChatPresenceOptions {
   platform?: string;
   build?: string;
-  activity?: string;
+  activity?: string | null;
   onlineType?: string;
   deploymentId?: string;
   signal?: AbortSignal;
@@ -144,7 +160,7 @@ export async function buildSignedMessage(keypair: ChatKeypair, input: SignedMess
 }
 
 export function buildPresencePayload(
-  options: { platform?: string; build?: string; activity?: string; onlineType?: string } = {},
+  options: { platform?: string; build?: string; activity?: string | null; onlineType?: string } = {},
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     status: options.onlineType ?? 'online',
@@ -161,6 +177,8 @@ export function buildPresencePayload(
   };
   if (typeof options.activity === 'string') {
     payload.activity = { value: options.activity };
+  } else if (options.activity === null) {
+    payload.activity = {};
   }
   return payload;
 }
@@ -268,7 +286,7 @@ export class ChatService {
     accountId: string,
     connectionId: string,
     options: ChatPresenceOptions = {},
-  ): Promise<void> {
+  ): Promise<EosOwnPresence | null> {
     requireString(easAccessToken, 'easAccessToken');
     requireString(accountId, 'accountId');
     requireString(connectionId, 'connectionId');
@@ -276,10 +294,11 @@ export class ChatService {
     const path =
       `/epic/presence/v1/${encodeURIComponent(deploymentId)}/` +
       `${encodeURIComponent(accountId)}/presence/${encodeURIComponent(connectionId)}`;
-    await this.chatRest.request('PATCH', path, {
+    const response = await this.chatRest.request<{ own?: EosOwnPresence } | null>('PATCH', path, {
       bearer: easAccessToken,
       json: buildPresencePayload(options),
       ...(options.signal ? { signal: options.signal } : {}),
     });
+    return response.data?.own ?? null;
   }
 }

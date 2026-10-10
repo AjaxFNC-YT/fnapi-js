@@ -1,5 +1,5 @@
 import { ValidationError } from '../core/errors.js';
-import type { QueryParams } from '../core/types.js';
+import type { QueryParams, RequestCacheOptions } from '../core/types.js';
 import type { EpicRestClient } from './rest.js';
 
 export const HABANERO_BASE_URL = 'https://fn-service-habanero-live-public.ogs.live.on.epicgames.com';
@@ -41,6 +41,7 @@ export interface HabaneroTrack {
   endTime: string;
   divisionCount: number;
   leaderboardTrackingEventId: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface HabaneroProgress {
@@ -52,7 +53,10 @@ export interface HabaneroProgress {
   currentDivision: number;
   highestDivision: number;
   promotionProgress: number;
-  currentPlayerRanking: number | null;
+  currentPlayerRanking?: number;
+  rankingRating?: number;
+  highestRating?: number;
+  startDivision?: number;
 }
 
 export interface HabaneroBaseOptions {
@@ -63,6 +67,7 @@ export interface HabaneroBaseOptions {
 export interface HabaneroTracksOptions extends HabaneroBaseOptions {
   endsAfter?: string;
   rankingType?: RankingType | (string & {});
+  cache?: boolean | RequestCacheOptions;
 }
 
 export interface HabaneroProgressOptions extends HabaneroBaseOptions {
@@ -118,6 +123,7 @@ export class HabaneroManager {
       {
         bearer: accessToken,
         query,
+        ...(options?.cache !== undefined ? { cache: options.cache } : {}),
         ...(options?.signal ? { signal: options.signal } : {}),
       },
     );

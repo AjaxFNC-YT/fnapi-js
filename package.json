@@ -1,6 +1,6 @@
 {
   "name": "fnapi-js",
-  "version": "2.0.6-beta.0",
+  "version": "2.0.7-beta.0",
   "description": "Zero-dependency TypeScript wrapper for the public Fortnite APIs with a full Epic Games account-service, realtime (XMPP/EOS), party, MCP and item-shop/gifting layer",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -62,6 +62,14 @@
   "homepage": "https://github.com/AjaxFNC-YT/fnapi-js#readme",
   "engines": {
     "node": ">=18.0.0"
+  },
+  "peerDependencies": {
+    "ws": ">=8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "ws": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

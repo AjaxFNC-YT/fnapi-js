@@ -1,16 +1,136 @@
 import { ValidationError } from './core/errors.js';
+import type {
+  EosTokenOptions,
+  LockerActiveLoadoutGroup,
+  LockerCosmeticData,
+  LockerItemCustomization,
+  LockerLoadoutGroupPreset,
+  LockerLoadoutPreset,
+  LockerLoadoutSlot,
+  LockerSchemaLoadout,
+  LockerVariantTag,
+} from './epic/eos.js';
 import type { EpicAuthSession } from './epic/session.js';
-import type { LockerActiveLoadoutGroup } from './epic/eos.js';
-import type { MCPOperation, MCPResponse } from './epic/mcp.js';
+import type { MCPResponse } from './epic/mcp.js';
 import type { AllCosmetics, AnyCosmetic } from './fortnite/types.js';
 
 export interface LockerCosmeticSource {
   all(): Promise<AllCosmetics>;
 }
 
+export const LockerSchema = {
+  character: 'CosmeticLoadout:LoadoutSchema_Character',
+  emotes: 'CosmeticLoadout:LoadoutSchema_Emotes',
+  wraps: 'CosmeticLoadout:LoadoutSchema_Wraps',
+  platform: 'CosmeticLoadout:LoadoutSchema_Platform',
+  instruments: 'CosmeticLoadout:LoadoutSchema_Sparks',
+  jam: 'CosmeticLoadout:LoadoutSchema_Jam',
+  car: 'CosmeticLoadout:LoadoutSchema_Vehicle',
+  suv: 'CosmeticLoadout:LoadoutSchema_Vehicle_SUV',
+  companion: 'CosmeticLoadout:LoadoutSchema_Mimosa',
+  moments: 'CosmeticLoadout:LoadoutSchema_Moments',
+} as const;
+
+export type LockerSchemaValue = (typeof LockerSchema)[keyof typeof LockerSchema];
+
+type EmoteIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+type WrapIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+type VehiclePart = 'Body' | 'Skin' | 'Wheels' | 'DriftTrail' | 'Booster' | 'Macaron' | 'Zest';
+
+export type LockerSlotName =
+  | 'character'
+  | 'backpack'
+  | 'pickaxe'
+  | 'glider'
+  | 'contrail'
+  | 'shoes'
+  | 'aura'
+  | `emote${EmoteIndex}`
+  | `wrap${WrapIndex}`
+  | 'bannerIcon'
+  | 'bannerColor'
+  | 'lobbyMusic'
+  | 'loadingScreen'
+  | 'bass'
+  | 'guitar'
+  | 'drums'
+  | 'keyboard'
+  | 'microphone'
+  | `jamTrack${EmoteIndex}`
+  | `car${VehiclePart}`
+  | `suv${VehiclePart}`
+  | 'companion'
+  | 'busMoment'
+  | 'victoryMoment';
+
+export interface LockerSlotDefinition {
+  schema: LockerSchemaValue;
+  slotTemplate: string;
+  itemType: string | null;
+}
+
+export const EMOTE_SLOT_COUNT = 8;
+export const WRAP_SLOT_COUNT = 7;
+export const JAM_TRACK_SLOT_COUNT = 8;
+
+const VEHICLE_PARTS: Array<[VehiclePart, string, string | null]> = [
+  ['Body', 'Vehicle_Body', 'VehicleCosmetics_Body'],
+  ['Skin', 'Vehicle_Skin', 'VehicleCosmetics_Skin'],
+  ['Wheels', 'Vehicle_Wheel', 'VehicleCosmetics_Wheel'],
+  ['DriftTrail', 'Vehicle_DriftSmoke', 'VehicleCosmetics_DriftTrail'],
+  ['Booster', 'Vehicle_Booster', 'VehicleCosmetics_Booster'],
+  ['Macaron', 'Vehicle_Macaron', null],
+  ['Zest', 'Vehicle_Zest', null],
+];
+
+function slot(schema: LockerSchemaValue, name: string, itemType: string | null): LockerSlotDefinition {
+  return { schema, slotTemplate: `CosmeticLoadoutSlotTemplate:LoadoutSlot_${name}`, itemType };
+}
+
+function indexed(prefix: string, count: number, build: (index: number) => LockerSlotDefinition): Record<string, LockerSlotDefinition> {
+  return Object.fromEntries(Array.from({ length: count }, (_, index) => [`${prefix}${index}`, build(index)]));
+}
+
+export const LOCKER_SLOTS = {
+  character: slot(LockerSchema.character, 'Character', 'AthenaCharacter'),
+  backpack: slot(LockerSchema.character, 'Backpack', 'AthenaBackpack'),
+  pickaxe: slot(LockerSchema.character, 'Pickaxe', 'AthenaPickaxe'),
+  glider: slot(LockerSchema.character, 'Glider', 'AthenaGlider'),
+  contrail: slot(LockerSchema.character, 'Contrails', 'AthenaSkyDiveContrail'),
+  shoes: slot(LockerSchema.character, 'Shoes', 'CosmeticShoes'),
+  aura: slot(LockerSchema.character, 'Aura', 'SparksAura'),
+  ...indexed('emote', EMOTE_SLOT_COUNT, (index) => slot(LockerSchema.emotes, `Emote_${index}`, 'AthenaDance')),
+  ...indexed('wrap', WRAP_SLOT_COUNT, (index) => slot(LockerSchema.wraps, `Wrap_${index}`, 'AthenaItemWrap')),
+  bannerIcon: slot(LockerSchema.platform, 'Banner_Icon', 'HomebaseBannerIcon'),
+  bannerColor: slot(LockerSchema.platform, 'Banner_Color', 'HomebaseBannerColor'),
+  lobbyMusic: slot(LockerSchema.platform, 'LobbyMusic', 'AthenaMusicPack'),
+  loadingScreen: slot(LockerSchema.platform, 'LoadingScreen', 'AthenaLoadingScreen'),
+  bass: slot(LockerSchema.instruments, 'Bass', 'SparksBass'),
+  guitar: slot(LockerSchema.instruments, 'Guitar', 'SparksGuitar'),
+  drums: slot(LockerSchema.instruments, 'Drum', 'SparksDrums'),
+  keyboard: slot(LockerSchema.instruments, 'Keyboard', 'SparksKeyboard'),
+  microphone: slot(LockerSchema.instruments, 'Microphone', 'SparksMicrophone'),
+  ...indexed('jamTrack', JAM_TRACK_SLOT_COUNT, (index) => slot(LockerSchema.jam, `JamSong${index}`, 'SparksSong')),
+  ...Object.fromEntries(VEHICLE_PARTS.map(([part, name, type]) => [`car${part}`, slot(LockerSchema.car, name, type)])),
+  ...Object.fromEntries(VEHICLE_PARTS.map(([part, name, type]) => [`suv${part}`, slot(LockerSchema.suv, `${name}_SUV`, type)])),
+  companion: slot(LockerSchema.companion, 'MimosaMain', 'CosmeticMimosa'),
+  busMoment: slot(LockerSchema.moments, 'MomentsBus', 'SparksSong'),
+  victoryMoment: slot(LockerSchema.moments, 'MomentsVictory', 'SparksSong'),
+} as Record<LockerSlotName, LockerSlotDefinition>;
+
+const SLOT_BY_TEMPLATE = new Map<string, LockerSlotName>(
+  (Object.entries(LOCKER_SLOTS) as Array<[LockerSlotName, LockerSlotDefinition]>).map(([name, definition]) => [
+    `${definition.schema}|${definition.slotTemplate}`,
+    name,
+  ]),
+);
+
+export const LOCKER_PRESET_PREFIX = 'loadoutgrouppreset-';
+
 export interface LockerVariant {
   channel: string;
   active: string;
+  activeData: string | null;
   owned: string[];
 }
 
@@ -21,205 +141,138 @@ export interface LockerItem {
   cosmeticId: string;
   favorite: boolean;
   seen: boolean;
+  lockedIn: boolean | null;
   variants: LockerVariant[];
+  createdAt: string | null;
+  updatedAt: string | null;
   name: string | null;
   cosmetic: AnyCosmetic | null;
   imageUrl: string | null;
 }
 
-export interface LockerSlot {
+export interface LockerVariantSelection {
+  channel: string;
+  variant: string;
+  additionalData?: string;
+}
+
+export interface LockerEquippedItem {
+  slot: LockerSlotName | null;
+  schema: string;
+  slotTemplate: string;
+  templateId: string;
   type: string;
   cosmeticId: string;
+  resolvedTemplateId: string | null;
+  variants: LockerVariantSelection[];
   name: string | null;
   cosmetic: AnyCosmetic | null;
   imageUrl: string | null;
+}
+
+type Equipped = LockerEquippedItem | null;
+
+export interface LockerVehicleLoadout {
+  body: Equipped;
+  skin: Equipped;
+  wheels: Equipped;
+  driftTrail: Equipped;
+  booster: Equipped;
+  macaron: Equipped;
+  zest: Equipped;
 }
 
 export interface LockerLoadout {
-  character: LockerSlot | null;
-  backpack: LockerSlot | null;
-  pickaxe: LockerSlot | null;
-  glider: LockerSlot | null;
-  contrail: LockerSlot | null;
-  musicPack: LockerSlot | null;
-  loadingScreen: LockerSlot | null;
-  dances: LockerSlot[];
-  itemWraps: LockerSlot[];
+  character: Equipped;
+  backpack: Equipped;
+  pickaxe: Equipped;
+  glider: Equipped;
+  contrail: Equipped;
+  shoes: Equipped;
+  aura: Equipped;
+  emotes: Equipped[];
+  wraps: Equipped[];
+  banner: { icon: Equipped; color: Equipped };
+  lobbyMusic: Equipped;
+  loadingScreen: Equipped;
+  instruments: { bass: Equipped; guitar: Equipped; drums: Equipped; keyboard: Equipped; microphone: Equipped };
+  jamTracks: Equipped[];
+  car: LockerVehicleLoadout;
+  suv: LockerVehicleLoadout;
+  companion: Equipped;
+  moments: { bus: Equipped; victory: Equipped };
+  slots: Partial<Record<LockerSlotName, LockerEquippedItem>>;
+  other: LockerEquippedItem[];
+  shuffle: Record<string, string>;
+  presetId: string | null;
+  updatedAt: string | null;
+  group: LockerActiveLoadoutGroup;
+}
+
+export interface LockerPreset {
+  id: string;
+  itemId: string;
+  name: string;
+  favorite: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
+  loadouts: Record<string, LockerSchemaLoadout>;
+}
+
+export interface LockerSchemaPreset {
+  id: string;
+  itemId: string;
+  index: number;
+  name: string | null;
+  schema: string;
+  items: LockerEquippedItem[];
+  createdAt: string | null;
+  updatedAt: string | null;
 }
 
 export interface LockerSnapshot {
   accountId: string | null;
-  profileRevision: number;
   items: LockerItem[];
   loadout: LockerLoadout;
+  presets: LockerPreset[];
+  schemaPresets: LockerSchemaPreset[];
 }
 
 export interface LockerFetchOptions {
   enrich?: boolean;
-  useLockerService?: boolean;
+  items?: boolean;
   signal?: AbortSignal;
 }
 
-export const LockerCategory = {
-  character: 'Character',
-  backpack: 'Backpack',
-  pickaxe: 'Pickaxe',
-  glider: 'Glider',
-  contrail: 'SkyDiveContrail',
-  musicPack: 'MusicPack',
-  loadingScreen: 'LoadingScreen',
-  dance: 'Dance',
-  itemWrap: 'ItemWrap',
-} as const;
-
-export type LockerCategoryValue = (typeof LockerCategory)[keyof typeof LockerCategory];
-
-export const ModularLoadout = {
-  character: 'CosmeticLoadout:LoadoutSchema_Character',
-  emotes: 'CosmeticLoadout:LoadoutSchema_Emotes',
-  wraps: 'CosmeticLoadout:LoadoutSchema_Wraps',
-  platform: 'CosmeticLoadout:LoadoutSchema_Platform',
-  sparks: 'CosmeticLoadout:LoadoutSchema_Sparks',
-  jam: 'CosmeticLoadout:LoadoutSchema_Jam',
-  vehicle: 'CosmeticLoadout:LoadoutSchema_Vehicle',
-} as const;
-
-export type ModularLoadoutValue = (typeof ModularLoadout)[keyof typeof ModularLoadout];
-
-const CATEGORY_BACKEND: Record<LockerCategoryValue, string> = {
-  Character: 'AthenaCharacter',
-  Backpack: 'AthenaBackpack',
-  Pickaxe: 'AthenaPickaxe',
-  Glider: 'AthenaGlider',
-  SkyDiveContrail: 'AthenaSkyDiveContrail',
-  MusicPack: 'AthenaMusicPack',
-  LoadingScreen: 'AthenaLoadingScreen',
-  Dance: 'AthenaDance',
-  ItemWrap: 'AthenaItemWrap',
-};
-
-const LOCKER_ITEM_TEMPLATE = 'CosmeticLocker:cosmeticlocker_athena';
-
-export interface LockerVariantUpdate {
-  channel: string;
-  active: string;
-  owned?: string[];
-}
-
-export interface LockerSlotTarget {
-  lockerItem?: string;
-  preset?: number;
+export interface LockerEquipOptions {
+  variants?: LockerVariantSelection[];
   signal?: AbortSignal;
 }
 
-export interface LockerEquipOptions extends LockerSlotTarget {
-  slotIndex?: number;
-  variants?: LockerVariantUpdate[];
+export interface LockerSlotChange {
+  item: string | null;
+  variants?: LockerVariantSelection[];
 }
 
-export interface LockerEquipLoadout {
-  character?: string | null;
-  backpack?: string | null;
-  pickaxe?: string | null;
-  glider?: string | null;
-  contrail?: string | null;
-  musicPack?: string | null;
-  loadingScreen?: string | null;
-  dances?: (string | null)[];
-  itemWraps?: (string | null)[];
+export type LockerChanges = Partial<Record<LockerSlotName, string | null | LockerSlotChange>>;
+
+export interface LockerSavePresetOptions {
+  loadouts?: Record<string, LockerSchemaLoadout>;
+  signal?: AbortSignal;
 }
 
-export interface ModularSlotInput {
-  slotTemplate: string;
-  equippedItem?: string | null;
-  customizations?: { channelTag: string; variantTag: string }[];
+export interface RichColor {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
 }
 
-export interface ModularLoadoutInput {
-  slots: ModularSlotInput[];
-  displayName?: string;
-}
-
-export interface DeletePresetOptions extends LockerSlotTarget {
-  fallbackLoadoutIndex?: number;
-  leaveNullSlot?: boolean;
-}
-
-export interface LockerPresetSlotOptions {
-  slotIndex?: number;
-  variants?: LockerVariantUpdate[];
-}
-
-export interface LockerPresetSlot {
-  category: LockerCategoryValue;
-  itemId: string | null;
-  slotIndex: number;
-  variants: LockerVariantUpdate[];
-}
-
-export interface ApplyPresetOptions extends LockerSlotTarget {
-  name?: string;
-}
-
-const LOCKER_SLOT_NAMES: Record<string, keyof LockerLoadout> = {
-  LoadoutSlot_Character: 'character',
-  LoadoutSlot_Backpack: 'backpack',
-  LoadoutSlot_Pickaxe: 'pickaxe',
-  LoadoutSlot_Glider: 'glider',
-  LoadoutSlot_Contrails: 'contrail',
-  LoadoutSlot_MusicPack: 'musicPack',
-  LoadoutSlot_LoadingScreen: 'loadingScreen',
-};
-
-interface LockerSlotData {
-  slots?: Record<string, { items?: string[] }>;
-}
-
-interface RawItem {
-  templateId?: string;
-  attributes?: {
-    favorite?: boolean;
-    item_seen?: boolean;
-    variants?: Array<{ channel?: string; active?: string; owned?: string[] }>;
-    locker_slots_data?: LockerSlotData;
-  };
-}
-
-const COSMETIC_TYPE = new RegExp(
-  '^(Athena(Character|Backpack|Pickaxe|Glider|SkyDiveContrail|Dance|Emoji|Toy|ItemWrap|' +
-    'MusicPack|LoadingScreen|Spray|PetCarrier|VictoryPose|ConsumableEmote)|Sparks|Vehicle|' +
-    'CosmeticShoes|BannerToken|HomebaseBannerIcon)',
-);
-
-function templateParts(templateId: string): { type: string; cosmeticId: string } {
-  const idx = templateId.indexOf(':');
-  if (idx < 0) return { type: '', cosmeticId: templateId };
-  return { type: templateId.slice(0, idx), cosmeticId: templateId.slice(idx + 1) };
-}
-
-function cosmeticImage(cosmetic: AnyCosmetic): string | null {
-  const value = cosmetic as unknown as Record<string, unknown>;
-  const images = value['images'] as Record<string, unknown> | undefined;
-  if (images) {
-    const pick = ['icon', 'featured', 'large', 'small', 'smallIcon', 'wide'];
-    for (const key of pick) {
-      if (typeof images[key] === 'string') return images[key] as string;
-    }
-  }
-  if (typeof value['albumArt'] === 'string') return value['albumArt'] as string;
-  return null;
-}
-
-function cosmeticName(cosmetic: AnyCosmetic): string | null {
-  const value = cosmetic as unknown as Record<string, unknown>;
-  if (typeof value['name'] === 'string') return value['name'] as string;
-  if (typeof value['title'] === 'string') return value['title'] as string;
-  return null;
-}
+export type InstrumentSlot = 'bass' | 'guitar' | 'drums' | 'keyboard' | 'microphone';
 
 export class Locker {
   private cosmeticMapCache: Map<string, AnyCosmetic> | null = null;
-  private lockerContextCache: { defaultItem: string | null; loadouts: string[] } | null = null;
+  private queue: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly session: EpicAuthSession,
@@ -227,347 +280,305 @@ export class Locker {
   ) {}
 
   async fetch(options: LockerFetchOptions = {}): Promise<LockerSnapshot> {
-    const response = await this.session.queryProfile('athena', options.signal ? { signal: options.signal } : {});
-    const profile = extractProfile(response);
-    const items = (profile['items'] ?? {}) as Record<string, RawItem>;
-    const attributes = ((profile['stats'] as Record<string, unknown> | undefined)?.['attributes'] ??
-      {}) as Record<string, unknown>;
-
-    const lockerItems = parseItems(items);
-    const loadout = parseLoadout(attributes, items);
-
-    if (loadout.character === null && options.useLockerService !== false) {
-      await this.applyLockerService(loadout, items, options.signal);
-    }
-
+    const request = tokenOptions(options.signal);
+    const [response, owned] = await Promise.all([
+      this.session.lockerItems(request),
+      options.items === false ? Promise.resolve([]) : this.session.lockerCosmetics(request),
+    ]);
     const snapshot: LockerSnapshot = {
       accountId: this.session.accountId,
-      profileRevision: response.profileRevision,
-      items: lockerItems,
-      loadout,
+      items: owned.map(toLockerItem),
+      loadout: toLoadout(response.activeLoadoutGroup ?? { loadouts: {} }),
+      presets: (response.loadoutGroupPresets ?? []).map(toPreset),
+      schemaPresets: (response.loadoutPresets ?? []).map(toSchemaPreset).sort((a, b) => a.index - b.index),
     };
-
-    if (options.enrich) {
-      const map = await this.cosmeticMap();
-      for (const item of snapshot.items) enrichSlot(item, map);
-      for (const slot of loadoutSlots(loadout)) enrichSlot(slot, map);
-    }
-
+    if (options.enrich) await this.enrichSnapshot(snapshot);
     return snapshot;
   }
 
-  items(options?: LockerFetchOptions): Promise<LockerItem[]> {
-    return this.fetch(options).then((snapshot) => snapshot.items);
+  async items(options: Omit<LockerFetchOptions, 'items'> = {}): Promise<LockerItem[]> {
+    const items = (await this.session.lockerCosmetics(tokenOptions(options.signal))).map(toLockerItem);
+    if (options.enrich) {
+      const map = await this.cosmeticMap();
+      for (const item of items) enrich(item, map);
+    }
+    return items;
   }
 
-  loadout(options?: LockerFetchOptions): Promise<LockerLoadout> {
-    return this.fetch(options).then((snapshot) => snapshot.loadout);
+  async loadout(options: Omit<LockerFetchOptions, 'items'> = {}): Promise<LockerLoadout> {
+    const response = await this.session.lockerItems(tokenOptions(options.signal));
+    const loadout = toLoadout(response.activeLoadoutGroup ?? { loadouts: {} });
+    if (options.enrich) {
+      const map = await this.cosmeticMap();
+      for (const item of equippedItems(loadout)) enrich(item, map);
+    }
+    return loadout;
+  }
+
+  async presets(signal?: AbortSignal): Promise<LockerPreset[]> {
+    const response = await this.session.lockerItems(tokenOptions(signal));
+    return (response.loadoutGroupPresets ?? []).map(toPreset);
   }
 
   async resolveImage(cosmeticId: string): Promise<string | null> {
-    const map = await this.cosmeticMap();
-    const cosmetic = map.get(cosmeticId.toLowerCase());
+    const cosmetic = (await this.cosmeticMap()).get(cosmeticPart(cosmeticId).toLowerCase());
     return cosmetic ? cosmeticImage(cosmetic) : null;
   }
 
-  setFavorite(itemIds: string[], favorite = true): Promise<MCPResponse> {
-    if (!Array.isArray(itemIds) || itemIds.length === 0) {
-      throw new ValidationError('"itemIds" must be a non-empty array', 'itemIds');
-    }
+  equip(slotName: LockerSlotName, item: string | null, options: LockerEquipOptions = {}): Promise<LockerLoadout> {
+    const change: LockerSlotChange = { item, ...(options.variants ? { variants: options.variants } : {}) };
+    return this.equipMany({ [slotName]: change } as LockerChanges, options.signal);
+  }
+
+  equipMany(changes: LockerChanges, signal?: AbortSignal): Promise<LockerLoadout> {
+    const entries = Object.entries(changes).filter(([, value]) => value !== undefined) as Array<
+      [LockerSlotName, string | null | LockerSlotChange]
+    >;
+    if (entries.length === 0) throw new ValidationError('"changes" must include at least one slot', 'changes');
+    const resolved = entries.map(([name, value]) => {
+      const definition = slotDefinition(name);
+      const change = typeof value === 'object' && value !== null ? value : { item: value };
+      return { definition, templateId: resolveTemplateId(name, definition, change.item), variants: change.variants };
+    });
+    return this.mutate((loadouts) => {
+      for (const { definition, templateId, variants } of resolved) {
+        const target = slotIn(loadouts, definition);
+        const sameItem = templateId !== null && sameTemplate(target.equippedItemId, templateId);
+        if (templateId === null) delete target.equippedItemId;
+        else target.equippedItemId = templateId;
+        delete target.resolvedEquippedItemId;
+        if (variants) target.itemCustomizations = variants.map(toCustomization);
+        else if (!sameItem) target.itemCustomizations = [];
+      }
+    }, signal);
+  }
+
+  clear(slotName: LockerSlotName, signal?: AbortSignal): Promise<LockerLoadout> {
+    return this.equip(slotName, null, signal ? { signal } : {});
+  }
+
+  setVariants(slotName: LockerSlotName, variants: LockerVariantSelection[], signal?: AbortSignal): Promise<LockerLoadout> {
+    const definition = slotDefinition(slotName);
+    return this.mutate((loadouts) => {
+      const target = slotIn(loadouts, definition);
+      if (!target.equippedItemId) throw new ValidationError(`Nothing is equipped in "${slotName}"`, 'slot');
+      const next = [...(target.itemCustomizations ?? [])];
+      for (const variant of variants) {
+        const existing = next.findIndex((entry) => entry.channelTag === variant.channel);
+        if (existing >= 0) next[existing] = toCustomization(variant);
+        else next.push(toCustomization(variant));
+      }
+      target.itemCustomizations = next;
+    }, signal);
+  }
+
+  setColor(slotName: LockerSlotName, color: string | RichColor, signal?: AbortSignal): Promise<LockerLoadout> {
+    const definition = slotDefinition(slotName);
+    const additionalData = encodeRichColor(color);
+    return this.mutate((loadouts) => {
+      const target = slotIn(loadouts, definition);
+      const channels = (target.itemCustomizations ?? []).filter(isRichColor);
+      if (channels.length === 0) {
+        throw new ValidationError(`The item in "${slotName}" has no colour channel equipped`, 'slot');
+      }
+      for (const channel of channels) channel.additionalData = additionalData;
+    }, signal);
+  }
+
+  equipOutfit(item: string, options?: LockerEquipOptions): Promise<LockerLoadout> {
+    return this.equip('character', item, options);
+  }
+
+  equipBackpack(item: string, options?: LockerEquipOptions): Promise<LockerLoadout> {
+    return this.equip('backpack', item, options);
+  }
+
+  equipPickaxe(item: string, options?: LockerEquipOptions): Promise<LockerLoadout> {
+    return this.equip('pickaxe', item, options);
+  }
+
+  equipGlider(item: string, options?: LockerEquipOptions): Promise<LockerLoadout> {
+    return this.equip('glider', item, options);
+  }
+
+  equipContrail(item: string, options?: LockerEquipOptions): Promise<LockerLoadout> {
+    return this.equip('contrail', item, options);
+  }
+
+  equipShoes(item: string, options?: LockerEquipOptions): Promise<LockerLoadout> {
+    return this.equip('shoes', item, options);
+  }
+
+  equipAura(item: string, options?: LockerEquipOptions): Promise<LockerLoadout> {
+    return this.equip('aura', item, options);
+  }
+
+  equipEmote(item: string, index = 0, options?: LockerEquipOptions): Promise<LockerLoadout> {
+    return this.equip(indexedSlot('emote', index, EMOTE_SLOT_COUNT), item, options);
+  }
+
+  equipWrap(item: string, index?: number, options: LockerEquipOptions = {}): Promise<LockerLoadout> {
+    if (index !== undefined) return this.equip(indexedSlot('wrap', index, WRAP_SLOT_COUNT), item, options);
+    const change: LockerSlotChange = { item, ...(options.variants ? { variants: options.variants } : {}) };
+    const changes = Object.fromEntries(Array.from({ length: WRAP_SLOT_COUNT }, (_, slotIndex) => [`wrap${slotIndex}`, change]));
+    return this.equipMany(changes as LockerChanges, options.signal);
+  }
+
+  equipJamTrack(item: string, index = 0, options?: LockerEquipOptions): Promise<LockerLoadout> {
+    return this.equip(indexedSlot('jamTrack', index, JAM_TRACK_SLOT_COUNT), item, options);
+  }
+
+  equipInstrument(instrument: InstrumentSlot, item: string, options?: LockerEquipOptions): Promise<LockerLoadout> {
+    return this.equip(instrument, item, options);
+  }
+
+  equipLoadingScreen(item: string, options?: LockerEquipOptions): Promise<LockerLoadout> {
+    return this.equip('loadingScreen', item, options);
+  }
+
+  equipLobbyMusic(item: string, options?: LockerEquipOptions): Promise<LockerLoadout> {
+    return this.equip('lobbyMusic', item, options);
+  }
+
+  equipCompanion(item: string, options?: LockerEquipOptions): Promise<LockerLoadout> {
+    return this.equip('companion', item, options);
+  }
+
+  setBanner(icon: string, color: string, signal?: AbortSignal): Promise<LockerLoadout> {
+    return this.equipMany({ bannerIcon: icon, bannerColor: color }, signal);
+  }
+
+  async savePreset(name: string, options: LockerSavePresetOptions = {}): Promise<LockerPreset> {
+    requireName(name);
+    const loadouts = options.loadouts ?? (await this.currentLoadouts(options.signal));
+    const saved = await this.session.putLoadoutGroupPreset(
+      `${LOCKER_PRESET_PREFIX}${uuid()}`,
+      { displayName: name, loadouts: cleanLoadouts(loadouts), athenaItemId: uuid(), creationTime: new Date().toISOString() },
+      tokenOptions(options.signal),
+    );
+    return toPreset(saved);
+  }
+
+  async updatePreset(
+    presetId: string,
+    update: { name?: string; loadouts?: Record<string, LockerSchemaLoadout> | 'current' },
+    signal?: AbortSignal,
+  ): Promise<LockerPreset> {
+    const existing = await this.findPreset(presetId, signal);
+    if (update.name !== undefined) requireName(update.name);
+    const loadouts =
+      update.loadouts === 'current' ? await this.currentLoadouts(signal) : (update.loadouts ?? existing.loadouts);
+    const saved = await this.session.updateLoadoutGroupPreset(
+      existing.id,
+      { displayName: update.name ?? existing.name, loadouts: cleanLoadouts(loadouts) },
+      tokenOptions(signal),
+    );
+    return toPreset(saved);
+  }
+
+  renamePreset(presetId: string, name: string, signal?: AbortSignal): Promise<LockerPreset> {
+    return this.updatePreset(presetId, { name }, signal);
+  }
+
+  async deletePreset(presetId: string, signal?: AbortSignal): Promise<void> {
+    await this.session.deleteLoadoutGroupPreset(presetId, tokenOptions(signal));
+  }
+
+  async applyPreset(presetId: string, signal?: AbortSignal): Promise<LockerLoadout> {
+    const preset = await this.findPreset(presetId, signal);
+    return this.enqueue(async () => {
+      const group = await this.session.setActiveLoadoutGroup(
+        { loadouts: cleanLoadouts(preset.loadouts), equippedPresetId: preset.id, equippedPresetItemId: preset.itemId },
+        tokenOptions(signal),
+      );
+      return toLoadout(group.loadouts ? group : { ...group, loadouts: preset.loadouts });
+    });
+  }
+
+  restore(group: Pick<LockerActiveLoadoutGroup, 'loadouts'> | LockerLoadout, signal?: AbortSignal): Promise<LockerLoadout> {
+    const loadouts = 'group' in group ? group.group.loadouts : group.loadouts;
+    return this.enqueue(async () => {
+      const updated = await this.session.setActiveLoadoutGroup({ loadouts: cleanLoadouts(loadouts) }, tokenOptions(signal));
+      return toLoadout(updated.loadouts ? updated : { ...updated, loadouts });
+    });
+  }
+
+  async setCompanionName(item: LockerItem | string, name: string, signal?: AbortSignal): Promise<void> {
+    requireName(name);
+    const owned = typeof item === 'string' ? await this.findItem(item, signal) : item;
+    await this.session.setCompanionName(`${owned.templateId}:${owned.id}`, name, tokenOptions(signal));
+  }
+
+  async lockInItem(
+    item: LockerItem | string,
+    variants: Record<string, LockerVariantTag>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const owned = typeof item === 'string' ? await this.findItem(item, signal) : item;
+    await this.session.lockInImmutableItem(`${owned.templateId}:${owned.id}`, variants, tokenOptions(signal));
+  }
+
+  setFavorite(itemIds: string[], favorite = true, signal?: AbortSignal): Promise<MCPResponse> {
+    requireIds(itemIds);
     return this.session.mcpOperation('SetItemFavoriteStatusBatch', {
       profileId: 'athena',
       payload: { itemIds, itemFavStatus: itemIds.map(() => favorite) },
-    });
-  }
-
-  markSeen(itemIds: string[]): Promise<MCPResponse> {
-    if (!Array.isArray(itemIds) || itemIds.length === 0) {
-      throw new ValidationError('"itemIds" must be a non-empty array', 'itemIds');
-    }
-    return this.session.mcpOperation('MarkItemSeen', {
-      profileId: 'athena',
-      payload: { itemIds },
-    });
-  }
-
-  async setSlot(
-    category: LockerCategoryValue,
-    itemId: string | null,
-    options: LockerEquipOptions = {},
-  ): Promise<MCPResponse> {
-    if (!CATEGORY_BACKEND[category]) {
-      throw new ValidationError(`Unknown locker category "${category}"`, 'category');
-    }
-    const lockerItem = await this.resolveLockerItem(options);
-    return this.athenaOp(
-      'SetCosmeticLockerSlot',
-      {
-        lockerItem,
-        category,
-        itemToSlot: buildItemToSlot(category, itemId),
-        slotIndex: options.slotIndex ?? 0,
-        variantUpdates: (options.variants ?? []).map(normalizeVariant),
-      },
-      options.signal,
-    );
-  }
-
-  equipOutfit(itemId: string, options: LockerEquipOptions = {}): Promise<MCPResponse> {
-    return this.setSlot('Character', itemId, options);
-  }
-
-  equipBackpack(itemId: string, options: LockerEquipOptions = {}): Promise<MCPResponse> {
-    return this.setSlot('Backpack', itemId, options);
-  }
-
-  equipPickaxe(itemId: string, options: LockerEquipOptions = {}): Promise<MCPResponse> {
-    return this.setSlot('Pickaxe', itemId, options);
-  }
-
-  equipGlider(itemId: string, options: LockerEquipOptions = {}): Promise<MCPResponse> {
-    return this.setSlot('Glider', itemId, options);
-  }
-
-  equipContrail(itemId: string, options: LockerEquipOptions = {}): Promise<MCPResponse> {
-    return this.setSlot('SkyDiveContrail', itemId, options);
-  }
-
-  equipMusicPack(itemId: string, options: LockerEquipOptions = {}): Promise<MCPResponse> {
-    return this.setSlot('MusicPack', itemId, options);
-  }
-
-  equipLoadingScreen(itemId: string, options: LockerEquipOptions = {}): Promise<MCPResponse> {
-    return this.setSlot('LoadingScreen', itemId, options);
-  }
-
-  equipEmote(itemId: string, slotIndex = 0, options: LockerSlotTarget = {}): Promise<MCPResponse> {
-    return this.setSlot('Dance', itemId, { ...options, slotIndex });
-  }
-
-  equipWrap(itemId: string, slotIndex = -1, options: LockerEquipOptions = {}): Promise<MCPResponse> {
-    return this.setSlot('ItemWrap', itemId, { ...options, slotIndex });
-  }
-
-  clearSlot(category: LockerCategoryValue, options: LockerEquipOptions = {}): Promise<MCPResponse> {
-    return this.setSlot(category, null, options);
-  }
-
-  setVariants(
-    category: LockerCategoryValue,
-    itemId: string,
-    variants: LockerVariantUpdate[],
-    options: LockerEquipOptions = {},
-  ): Promise<MCPResponse> {
-    return this.setSlot(category, itemId, { ...options, variants });
-  }
-
-  async equipLoadout(loadout: LockerEquipLoadout, options: LockerSlotTarget = {}): Promise<MCPResponse> {
-    const lockerItem = await this.resolveLockerItem(options);
-    const loadoutData: Array<Record<string, unknown>> = [];
-    const push = (category: LockerCategoryValue, id: string | null | undefined, slotIndex = 0): void => {
-      if (id === undefined) return;
-      loadoutData.push({
-        category,
-        itemToSlot: buildItemToSlot(category, id),
-        slotIndex,
-        variantUpdates: [],
-      });
-    };
-    push('Character', loadout.character);
-    push('Backpack', loadout.backpack);
-    push('Pickaxe', loadout.pickaxe);
-    push('Glider', loadout.glider);
-    push('SkyDiveContrail', loadout.contrail);
-    push('MusicPack', loadout.musicPack);
-    push('LoadingScreen', loadout.loadingScreen);
-    loadout.dances?.forEach((id, index) => push('Dance', id, index));
-    loadout.itemWraps?.forEach((id, index) => push('ItemWrap', id, index));
-
-    if (loadoutData.length === 0) {
-      throw new ValidationError('"loadout" must include at least one slot to equip', 'loadout');
-    }
-    return this.athenaOp('SetCosmeticLockerSlots', { lockerItem, loadoutData }, options.signal);
-  }
-
-  async setBanner(iconId: string, colorId: string, options: LockerSlotTarget = {}): Promise<MCPResponse> {
-    const lockerItem = await this.resolveLockerItem(options);
-    return this.athenaOp(
-      'SetCosmeticLockerBanner',
-      {
-        lockerItem,
-        bannerIconTemplateName: bannerName(iconId),
-        bannerColorTemplateName: bannerName(colorId),
-      },
-      options.signal,
-    );
-  }
-
-  async renameLocker(name: string, options: LockerSlotTarget = {}): Promise<MCPResponse> {
-    if (typeof name !== 'string' || name.length === 0) {
-      throw new ValidationError('"name" must be a non-empty string', 'name');
-    }
-    const lockerItem = await this.resolveLockerItem(options);
-    return this.athenaOp('SetCosmeticLockerName', { lockerItem, name }, options.signal);
-  }
-
-  createPreset(): LockerPresetBuilder {
-    return new LockerPresetBuilder(this);
-  }
-
-  async applyPreset(slots: LockerPresetSlot[], options: ApplyPresetOptions = {}): Promise<MCPResponse> {
-    if (!Array.isArray(slots) || slots.length === 0) {
-      throw new ValidationError('A preset must contain at least one slot', 'slots');
-    }
-    for (const slot of slots) {
-      if (!CATEGORY_BACKEND[slot.category]) {
-        throw new ValidationError(`Unknown locker category "${slot.category}"`, 'category');
-      }
-    }
-    const lockerItem = await this.resolveLockerItem(options);
-    const loadoutData = slots.map((slot) => ({
-      category: slot.category,
-      itemToSlot: buildItemToSlot(slot.category, slot.itemId),
-      slotIndex: slot.slotIndex,
-      variantUpdates: slot.variants.map(normalizeVariant),
-    }));
-
-    const response = await this.athenaOp('SetCosmeticLockerSlots', { lockerItem, loadoutData }, options.signal);
-    if (typeof options.name === 'string' && options.name.length > 0) {
-      await this.athenaOp('SetCosmeticLockerName', { lockerItem, name: options.name }, options.signal);
-    }
-    return response;
-  }
-
-  copyPreset(
-    sourceIndex: number,
-    targetIndex: number,
-    newName?: string,
-    signal?: AbortSignal,
-  ): Promise<MCPResponse> {
-    return this.athenaOp(
-      'CopyCosmeticLoadout',
-      { sourceIndex, targetIndex, optNewNameForTarget: newName ?? '' },
-      signal,
-    );
-  }
-
-  deletePreset(index: number, options: DeletePresetOptions = {}): Promise<MCPResponse> {
-    return this.athenaOp(
-      'DeleteCosmeticLoadout',
-      {
-        index,
-        fallbackLoadoutIndex: options.fallbackLoadoutIndex ?? -1,
-        leaveNullSlot: options.leaveNullSlot ?? false,
-      },
-      options.signal,
-    );
-  }
-
-  putModularLoadout(
-    loadoutType: ModularLoadoutValue,
-    presetId: number,
-    data: ModularLoadoutInput,
-    signal?: AbortSignal,
-  ): Promise<MCPResponse> {
-    const loadout: Record<string, unknown> = { slots: modularSlots(data.slots) };
-    if (typeof data.displayName === 'string') loadout['display_name'] = data.displayName;
-    return this.athenaOp(
-      'PutModularCosmeticLoadout',
-      { loadoutType, presetId, loadoutData: JSON.stringify(loadout) },
-      signal,
-    );
-  }
-
-  equipModularPreset(
-    loadoutType: ModularLoadoutValue,
-    presetId: number,
-    signal?: AbortSignal,
-  ): Promise<MCPResponse> {
-    return this.athenaOp('EquipModularCosmeticLoadoutPreset', { loadoutType, presetId }, signal);
-  }
-
-  deleteModularLoadout(
-    loadoutType: ModularLoadoutValue,
-    presetId: number,
-    signal?: AbortSignal,
-  ): Promise<MCPResponse> {
-    return this.athenaOp('DeleteModularCosmeticLoadout', { loadoutType, presetId }, signal);
-  }
-
-  setRandomLoadout(enabled: boolean, signal?: AbortSignal): Promise<MCPResponse> {
-    return this.athenaOp('SetRandomCosmeticLoadoutFlag', { random: enabled }, signal);
-  }
-
-  setShuffleEnabled(
-    loadoutType: ModularLoadoutValue,
-    enabled: boolean,
-    signal?: AbortSignal,
-  ): Promise<MCPResponse> {
-    return this.athenaOp('SetLoadoutShuffleEnabled', { loadoutType, bEnabled: enabled }, signal);
-  }
-
-  private athenaOp(operation: MCPOperation, payload: Record<string, unknown>, signal?: AbortSignal): Promise<MCPResponse> {
-    return this.session.mcpOperation(operation, {
-      profileId: 'athena',
-      payload,
       ...(signal ? { signal } : {}),
     });
   }
 
-  private async lockerContext(signal?: AbortSignal): Promise<{ defaultItem: string | null; loadouts: string[] }> {
-    if (this.lockerContextCache) return this.lockerContextCache;
-    const response = await this.session.queryProfile('athena', signal ? { signal } : {});
-    const profile = extractProfile(response);
-    const items = (profile['items'] ?? {}) as Record<string, RawItem>;
-    const attributes = ((profile['stats'] as Record<string, unknown> | undefined)?.['attributes'] ??
-      {}) as Record<string, unknown>;
-
-    const loadouts = Array.isArray(attributes['loadouts'])
-      ? (attributes['loadouts'] as unknown[]).filter((guid): guid is string => typeof guid === 'string')
-      : [];
-    const lastApplied = typeof attributes['last_applied_loadout'] === 'string'
-      ? (attributes['last_applied_loadout'] as string)
-      : null;
-
-    let defaultItem = lastApplied ?? loadouts[0] ?? null;
-    if (!defaultItem) {
-      for (const [guid, raw] of Object.entries(items)) {
-        if (raw.templateId === LOCKER_ITEM_TEMPLATE) {
-          defaultItem = guid;
-          break;
-        }
-      }
-    }
-
-    this.lockerContextCache = { defaultItem, loadouts };
-    return this.lockerContextCache;
+  markSeen(itemIds: string[], signal?: AbortSignal): Promise<MCPResponse> {
+    requireIds(itemIds);
+    return this.session.mcpOperation('MarkItemSeen', {
+      profileId: 'athena',
+      payload: { itemIds },
+      ...(signal ? { signal } : {}),
+    });
   }
 
-  private async resolveLockerItem(target: LockerSlotTarget): Promise<string> {
-    if (target.lockerItem) return target.lockerItem;
-    const context = await this.lockerContext(target.signal);
-    if (typeof target.preset === 'number') {
-      const guid = context.loadouts[target.preset];
-      if (!guid) throw new ValidationError(`No locker preset at index ${target.preset}`, 'preset');
-      return guid;
-    }
-    if (!context.defaultItem) {
-      throw new ValidationError('Could not find the athena cosmetic locker on this profile', 'lockerItem');
-    }
-    return context.defaultItem;
+  private mutate(edit: (loadouts: Record<string, LockerSchemaLoadout>) => void, signal?: AbortSignal): Promise<LockerLoadout> {
+    return this.enqueue(async () => {
+      const loadouts = cleanLoadouts(await this.currentLoadouts(signal));
+      edit(loadouts);
+      const updated = await this.session.setActiveLoadoutGroup({ loadouts }, tokenOptions(signal));
+      return toLoadout(updated.loadouts ? updated : { ...updated, loadouts });
+    });
   }
 
-  private async applyLockerService(
-    loadout: LockerLoadout,
-    items: Record<string, RawItem>,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    try {
-      const response = await this.session.lockerItems(signal ? { signal } : {});
-      if (response.activeLoadoutGroup) mergeActiveLoadout(loadout, response.activeLoadoutGroup, items);
-    } catch {
-      // The EOS locker service may be unavailable (e.g. a client_credentials session); keep the athena result.
-    }
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(task, task);
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async currentLoadouts(signal?: AbortSignal): Promise<Record<string, LockerSchemaLoadout>> {
+    const response = await this.session.lockerItems(tokenOptions(signal));
+    return response.activeLoadoutGroup?.loadouts ?? {};
+  }
+
+  private async findPreset(presetId: string, signal?: AbortSignal): Promise<LockerPreset> {
+    const preset = (await this.presets(signal)).find((entry) => entry.id === presetId || entry.name === presetId);
+    if (!preset) throw new ValidationError(`No locker preset "${presetId}"`, 'presetId');
+    return preset;
+  }
+
+  private async findItem(item: string, signal?: AbortSignal): Promise<LockerItem> {
+    const wanted = item.toLowerCase();
+    const owned = (await this.session.lockerCosmetics(tokenOptions(signal))).find(
+      (entry) =>
+        entry.athenaItemId === item ||
+        entry.templateId.toLowerCase() === wanted ||
+        cosmeticPart(entry.templateId).toLowerCase() === wanted,
+    );
+    if (!owned) throw new ValidationError(`"${item}" is not in this locker`, 'item');
+    return toLockerItem(owned);
+  }
+
+  private async enrichSnapshot(snapshot: LockerSnapshot): Promise<void> {
+    const map = await this.cosmeticMap();
+    for (const item of snapshot.items) enrich(item, map);
+    for (const item of equippedItems(snapshot.loadout)) enrich(item, map);
+    for (const preset of snapshot.schemaPresets) for (const item of preset.items) enrich(item, map);
   }
 
   private async cosmeticMap(): Promise<Map<string, AnyCosmetic>> {
@@ -578,292 +589,316 @@ export class Locker {
       );
     }
     if (this.cosmeticMapCache) return this.cosmeticMapCache;
-
     const all = await this.cosmetics.all();
     const map = new Map<string, AnyCosmetic>();
-    const groups: AnyCosmetic[][] = [
-      all.br,
-      all.tracks,
-      all.instruments,
-      all.cars,
-      all.lego,
-      all.legoKits,
-      all.beans,
-    ];
-    for (const group of groups) {
-      for (const cosmetic of group) {
-        map.set(cosmetic.id.toLowerCase(), cosmetic);
-      }
+    for (const group of [all.br, all.tracks, all.instruments, all.cars, all.lego, all.legoKits, all.beans] as AnyCosmetic[][]) {
+      for (const cosmetic of group) map.set(cosmetic.id.toLowerCase(), cosmetic);
     }
     this.cosmeticMapCache = map;
     return map;
   }
 }
 
-export class LockerPresetBuilder {
-  private readonly slots: LockerPresetSlot[] = [];
-  private presetName: string | null = null;
-
-  constructor(private readonly locker: Locker) {}
-
-  slot(
-    category: LockerCategoryValue,
-    itemId: string | null,
-    options: LockerPresetSlotOptions = {},
-  ): this {
-    const slotIndex = options.slotIndex ?? 0;
-    const entry: LockerPresetSlot = {
-      category,
-      itemId,
-      slotIndex,
-      variants: options.variants ?? [],
-    };
-    const existing = this.slots.findIndex(
-      (slot) => slot.category === category && slot.slotIndex === slotIndex,
-    );
-    if (existing >= 0) this.slots[existing] = entry;
-    else this.slots.push(entry);
-    return this;
+export function encodeRichColor(color: string | RichColor): string {
+  if (typeof color === 'string') {
+    const hex = color.trim().replace(/^#/, '');
+    if (/^[0-9a-f]{32}$/i.test(hex)) return hex.toUpperCase();
+    const full = /^[0-9a-f]{3,4}$/i.test(hex) ? [...hex].map((digit) => digit + digit).join('') : hex;
+    if (!/^([0-9a-f]{6}|[0-9a-f]{8})$/i.test(full)) {
+      throw new ValidationError('"color" must be #RGB, #RRGGBB, #RRGGBBAA or 32 hex digits', 'color');
+    }
+    const bytes = full.match(/../g)!.map((pair) => Number.parseInt(pair, 16) / 255);
+    return encodeRichColor({ r: bytes[0]!, g: bytes[1]!, b: bytes[2]!, a: bytes[3] ?? 1 });
   }
-
-  character(itemId: string | null, options: LockerPresetSlotOptions = {}): this {
-    return this.slot('Character', itemId, { ...options, slotIndex: 0 });
-  }
-
-  backpack(itemId: string | null, options: LockerPresetSlotOptions = {}): this {
-    return this.slot('Backpack', itemId, { ...options, slotIndex: 0 });
-  }
-
-  pickaxe(itemId: string | null, options: LockerPresetSlotOptions = {}): this {
-    return this.slot('Pickaxe', itemId, { ...options, slotIndex: 0 });
-  }
-
-  glider(itemId: string | null, options: LockerPresetSlotOptions = {}): this {
-    return this.slot('Glider', itemId, { ...options, slotIndex: 0 });
-  }
-
-  contrail(itemId: string | null, options: LockerPresetSlotOptions = {}): this {
-    return this.slot('SkyDiveContrail', itemId, { ...options, slotIndex: 0 });
-  }
-
-  musicPack(itemId: string | null, options: LockerPresetSlotOptions = {}): this {
-    return this.slot('MusicPack', itemId, { ...options, slotIndex: 0 });
-  }
-
-  loadingScreen(itemId: string | null, options: LockerPresetSlotOptions = {}): this {
-    return this.slot('LoadingScreen', itemId, { ...options, slotIndex: 0 });
-  }
-
-  emote(slotIndex: number, itemId: string | null, options: LockerPresetSlotOptions = {}): this {
-    return this.slot('Dance', itemId, { ...options, slotIndex });
-  }
-
-  wrap(slotIndex: number, itemId: string | null, options: LockerPresetSlotOptions = {}): this {
-    return this.slot('ItemWrap', itemId, { ...options, slotIndex });
-  }
-
-  clear(category: LockerCategoryValue, slotIndex = 0): this {
-    return this.slot(category, null, { slotIndex });
-  }
-
-  name(name: string): this {
-    this.presetName = name;
-    return this;
-  }
-
-  get size(): number {
-    return this.slots.length;
-  }
-
-  build(): LockerPresetSlot[] {
-    return this.slots.map((slot) => ({ ...slot, variants: [...slot.variants] }));
-  }
-
-  apply(options: LockerSlotTarget = {}): Promise<MCPResponse> {
-    const applyOptions: ApplyPresetOptions = { ...options };
-    if (this.presetName !== null) applyOptions.name = this.presetName;
-    return this.locker.applyPreset(this.build(), applyOptions);
-  }
-
-  save(options: LockerSlotTarget = {}): Promise<MCPResponse> {
-    return this.apply(options);
-  }
+  const view = new DataView(new ArrayBuffer(16));
+  [color.r, color.g, color.b, color.a].forEach((value, index) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new ValidationError('"color" channels must be finite numbers', 'color');
+    }
+    view.setFloat32(index * 4, value);
+  });
+  return Array.from(new Uint8Array(view.buffer), (byte) => byte.toString(16).padStart(2, '0')).join('').toUpperCase();
 }
 
-function extractProfile(response: MCPResponse): Record<string, unknown> {
-  const changes = response.profileChanges as Array<Record<string, unknown>>;
-  const full = changes.find((change) => change['changeType'] === 'fullProfileUpdate');
-  return (full?.['profile'] ?? {}) as Record<string, unknown>;
+export function decodeRichColor(additionalData: string | null | undefined): RichColor | null {
+  if (!additionalData || !/^[0-9a-f]{32}$/i.test(additionalData)) return null;
+  const view = new DataView(new Uint8Array(additionalData.match(/../g)!.map((pair) => Number.parseInt(pair, 16))).buffer);
+  return { r: view.getFloat32(0), g: view.getFloat32(4), b: view.getFloat32(8), a: view.getFloat32(12) };
 }
 
-function parseItems(items: Record<string, RawItem>): LockerItem[] {
-  const result: LockerItem[] = [];
-  for (const [id, raw] of Object.entries(items)) {
-    if (typeof raw.templateId !== 'string') continue;
-    const { type, cosmeticId } = templateParts(raw.templateId);
-    if (!COSMETIC_TYPE.test(type)) continue;
-
-    result.push({
-      id,
-      templateId: raw.templateId,
-      type,
-      cosmeticId,
-      favorite: raw.attributes?.favorite === true,
-      seen: raw.attributes?.item_seen === true,
-      variants: (raw.attributes?.variants ?? []).map((variant) => ({
-        channel: variant.channel ?? '',
-        active: variant.active ?? '',
-        owned: variant.owned ?? [],
-      })),
-      name: null,
-      cosmetic: null,
-      imageUrl: null,
-    });
-  }
-  return result;
+function tokenOptions(signal?: AbortSignal): EosTokenOptions {
+  return signal ? { signal } : {};
 }
 
-function slotFrom(value: unknown, items: Record<string, RawItem>): LockerSlot | null {
-  if (typeof value !== 'string' || value.length === 0) return null;
-  let templateId = value;
-  if (!value.includes(':')) {
-    const item = items[value];
-    if (typeof item?.templateId !== 'string') return null;
-    templateId = item.templateId;
-  }
-  const { type, cosmeticId } = templateParts(templateId);
-  return { type, cosmeticId, name: null, cosmetic: null, imageUrl: null };
+function slotDefinition(name: LockerSlotName): LockerSlotDefinition {
+  const definition = LOCKER_SLOTS[name];
+  if (!definition) throw new ValidationError(`Unknown locker slot "${name}"`, 'slot');
+  return definition;
 }
 
-function appliedLoadoutSlots(
-  attributes: Record<string, unknown>,
-  items: Record<string, RawItem>,
-): Record<string, { items?: string[] }> | undefined {
-  const applied = attributes['last_applied_loadout'];
-  let loadout = typeof applied === 'string' ? items[applied] : undefined;
-
-  if (!loadout) {
-    const loadouts = Array.isArray(attributes['loadouts']) ? (attributes['loadouts'] as unknown[]) : [];
-    const index = typeof attributes['active_loadout_index'] === 'number' ? attributes['active_loadout_index'] : 0;
-    const guid = loadouts[index] ?? loadouts[0];
-    if (typeof guid === 'string') loadout = items[guid];
+function indexedSlot(prefix: string, index: number, count: number): LockerSlotName {
+  if (!Number.isInteger(index) || index < 0 || index >= count) {
+    throw new ValidationError(`"index" must be between 0 and ${count - 1}`, 'index');
   }
-
-  if (!loadout) {
-    const entry = Object.values(items).find((item) => item.attributes?.locker_slots_data?.slots);
-    loadout = entry;
-  }
-
-  return loadout?.attributes?.locker_slots_data?.slots;
+  return `${prefix}${index}` as LockerSlotName;
 }
 
-function parseLoadout(attributes: Record<string, unknown>, items: Record<string, RawItem>): LockerLoadout {
-  const slots = appliedLoadoutSlots(attributes, items);
+function resolveTemplateId(name: LockerSlotName, definition: LockerSlotDefinition, item: string | null): string | null {
+  if (item === null) return null;
+  if (typeof item !== 'string' || item.trim().length === 0) {
+    throw new ValidationError(`"${name}" item must be a cosmetic id or null`, 'item');
+  }
+  const value = item.trim();
+  const colon = value.indexOf(':');
+  if (colon > 0) return `${value.slice(0, colon)}:${value.slice(colon + 1).toLowerCase()}`;
+  const id = value.toLowerCase();
+  const type =
+    (definition.slotTemplate.endsWith('LobbyMusic') && id.startsWith('sid_')) ? 'SparksSong' : definition.itemType;
+  if (!type) throw new ValidationError(`"${name}" needs a full template id (Type:id)`, 'item');
+  return `${type}:${id}`;
+}
 
-  const single = (slotKey: string, legacyKey: string): LockerSlot | null => {
-    const equipped = slots?.[slotKey]?.items?.find((value) => typeof value === 'string' && value.length > 0);
-    if (equipped) return slotFrom(equipped, items);
-    return slotFrom(attributes[legacyKey], items);
-  };
+function sameTemplate(a: string | undefined, b: string): boolean {
+  return typeof a === 'string' && a.toLowerCase() === b.toLowerCase();
+}
 
-  const many = (slotKey: string, legacyKey: string): LockerSlot[] => {
-    const fromSlots = (slots?.[slotKey]?.items ?? []).map((value) => slotFrom(value, items)).filter(nonNull);
-    if (fromSlots.length > 0) return fromSlots;
-    const legacy = Array.isArray(attributes[legacyKey]) ? (attributes[legacyKey] as unknown[]) : [];
-    return legacy.map((value) => slotFrom(value, items)).filter(nonNull);
-  };
+function slotIn(loadouts: Record<string, LockerSchemaLoadout>, definition: LockerSlotDefinition): LockerLoadoutSlot {
+  const schema = (loadouts[definition.schema] ??= { loadoutSlots: [], shuffleType: 'DISABLED' });
+  let target = schema.loadoutSlots.find((entry) => entry.slotTemplate === definition.slotTemplate);
+  if (!target) {
+    target = { slotTemplate: definition.slotTemplate, itemCustomizations: [] };
+    schema.loadoutSlots.push(target);
+  }
+  return target;
+}
 
+function cleanLoadouts(loadouts: Record<string, LockerSchemaLoadout>): Record<string, LockerSchemaLoadout> {
+  return Object.fromEntries(
+    Object.entries(loadouts).map(([schema, loadout]) => [
+      schema,
+      {
+        ...(loadout.shuffleType ? { shuffleType: loadout.shuffleType } : {}),
+        loadoutSlots: (loadout.loadoutSlots ?? []).map((entry) => ({
+          slotTemplate: entry.slotTemplate,
+          ...(entry.equippedItemId ? { equippedItemId: entry.equippedItemId } : {}),
+          itemCustomizations: (entry.itemCustomizations ?? []).map((custom) => ({ ...custom })),
+        })),
+      },
+    ]),
+  );
+}
+
+function toCustomization(variant: LockerVariantSelection): LockerItemCustomization {
+  if (!variant?.channel || !variant.variant) {
+    throw new ValidationError('Each variant needs a "channel" and a "variant"', 'variants');
+  }
   return {
-    character: single('Character', 'favorite_character'),
-    backpack: single('Backpack', 'favorite_backpack'),
-    pickaxe: single('Pickaxe', 'favorite_pickaxe'),
-    glider: single('Glider', 'favorite_glider'),
-    contrail: single('SkyDiveContrail', 'favorite_skydivecontrail'),
-    musicPack: single('MusicPack', 'favorite_musicpack'),
-    loadingScreen: single('LoadingScreen', 'favorite_loadingscreen'),
-    dances: many('Dance', 'favorite_dance'),
-    itemWraps: many('ItemWrap', 'favorite_itemwraps'),
+    channelTag: variant.channel,
+    variantTag: variant.variant,
+    ...(variant.additionalData !== undefined ? { additionalData: variant.additionalData } : {}),
   };
 }
 
-function slotTemplateName(slotTemplate: string): string {
-  const key = slotTemplate.split(':').pop() ?? slotTemplate;
-  return key;
+function isRichColor(custom: LockerItemCustomization): boolean {
+  return custom.variantTag === 'RichColor' || (custom.channelTag ?? '').includes('RichColor');
 }
 
-function mergeActiveLoadout(
-  loadout: LockerLoadout,
-  group: LockerActiveLoadoutGroup,
-  items: Record<string, RawItem>,
-): void {
-  const dances: LockerSlot[] = [];
-  for (const schema of Object.values(group.loadouts ?? {})) {
-    for (const slot of schema.loadoutSlots ?? []) {
-      if (!slot.equippedItemId) continue;
-      const parsed = slotFrom(slot.equippedItemId, items);
-      if (!parsed) continue;
-      const name = slotTemplateName(slot.slotTemplate);
-      if (name.startsWith('LoadoutSlot_Emote')) {
-        dances.push(parsed);
-        continue;
-      }
-      const key = LOCKER_SLOT_NAMES[name];
-      if (key) (loadout[key] as LockerSlot) = parsed;
+function templateParts(templateId: string): { type: string; cosmeticId: string } {
+  const index = templateId.indexOf(':');
+  if (index < 0) return { type: '', cosmeticId: templateId };
+  return { type: templateId.slice(0, index), cosmeticId: templateId.slice(index + 1) };
+}
+
+function cosmeticPart(value: string): string {
+  return templateParts(value).cosmeticId;
+}
+
+function toLockerItem(raw: LockerCosmeticData): LockerItem {
+  const { type, cosmeticId } = templateParts(raw.templateId);
+  const channels = new Set([...Object.keys(raw.activeVariants ?? {}), ...Object.keys(raw.ownedVariants ?? {})]);
+  return {
+    id: raw.athenaItemId,
+    templateId: raw.templateId,
+    type,
+    cosmeticId,
+    favorite: raw.favoriteStatus === 'FAVORITED',
+    seen: raw.itemSeenStatus !== 'UNSEEN',
+    lockedIn: typeof raw.lockedIn === 'boolean' ? raw.lockedIn : null,
+    variants: [...channels].map((channel) => {
+      const active = raw.activeVariants?.[channel];
+      const owned = (raw.ownedVariants?.[channel] ?? []).map((entry) => entry.variantTag);
+      return {
+        channel,
+        active: active?.variantTag ?? '',
+        activeData: active?.additionalData ?? null,
+        owned: active?.variantTag && !owned.includes(active.variantTag) ? [active.variantTag, ...owned] : owned,
+      };
+    }),
+    createdAt: raw.creationTime ?? null,
+    updatedAt: raw.updatedTime ?? null,
+    name: null,
+    cosmetic: null,
+    imageUrl: null,
+  };
+}
+
+function toEquipped(schema: string, entry: LockerLoadoutSlot): LockerEquippedItem | null {
+  if (!entry.equippedItemId) return null;
+  const { type, cosmeticId } = templateParts(entry.equippedItemId);
+  return {
+    slot: SLOT_BY_TEMPLATE.get(`${schema}|${entry.slotTemplate}`) ?? null,
+    schema,
+    slotTemplate: entry.slotTemplate,
+    templateId: entry.equippedItemId,
+    type,
+    cosmeticId,
+    resolvedTemplateId: entry.resolvedEquippedItemId ?? null,
+    variants: (entry.itemCustomizations ?? [])
+      .filter((custom) => custom.channelTag && custom.variantTag)
+      .map((custom) => ({
+        channel: custom.channelTag!,
+        variant: custom.variantTag!,
+        ...(custom.additionalData ? { additionalData: custom.additionalData } : {}),
+      })),
+    name: null,
+    cosmetic: null,
+    imageUrl: null,
+  };
+}
+
+function toLoadout(group: LockerActiveLoadoutGroup): LockerLoadout {
+  const slots: Partial<Record<LockerSlotName, LockerEquippedItem>> = {};
+  const other: LockerEquippedItem[] = [];
+  const shuffle: Record<string, string> = {};
+  for (const [schema, loadout] of Object.entries(group.loadouts ?? {})) {
+    if (loadout.shuffleType) shuffle[schema] = loadout.shuffleType;
+    for (const entry of loadout.loadoutSlots ?? []) {
+      const item = toEquipped(schema, entry);
+      if (!item) continue;
+      if (item.slot) slots[item.slot] = item;
+      else other.push(item);
     }
   }
-  if (dances.length > 0) loadout.dances = dances;
+  const get = (name: LockerSlotName): Equipped => slots[name] ?? null;
+  const list = (prefix: string, count: number): Equipped[] =>
+    Array.from({ length: count }, (_, index) => get(`${prefix}${index}` as LockerSlotName));
+  const vehicle = (prefix: 'car' | 'suv'): LockerVehicleLoadout => ({
+    body: get(`${prefix}Body`),
+    skin: get(`${prefix}Skin`),
+    wheels: get(`${prefix}Wheels`),
+    driftTrail: get(`${prefix}DriftTrail`),
+    booster: get(`${prefix}Booster`),
+    macaron: get(`${prefix}Macaron`),
+    zest: get(`${prefix}Zest`),
+  });
+  return {
+    character: get('character'),
+    backpack: get('backpack'),
+    pickaxe: get('pickaxe'),
+    glider: get('glider'),
+    contrail: get('contrail'),
+    shoes: get('shoes'),
+    aura: get('aura'),
+    emotes: list('emote', EMOTE_SLOT_COUNT),
+    wraps: list('wrap', WRAP_SLOT_COUNT),
+    banner: { icon: get('bannerIcon'), color: get('bannerColor') },
+    lobbyMusic: get('lobbyMusic'),
+    loadingScreen: get('loadingScreen'),
+    instruments: {
+      bass: get('bass'),
+      guitar: get('guitar'),
+      drums: get('drums'),
+      keyboard: get('keyboard'),
+      microphone: get('microphone'),
+    },
+    jamTracks: list('jamTrack', JAM_TRACK_SLOT_COUNT),
+    car: vehicle('car'),
+    suv: vehicle('suv'),
+    companion: get('companion'),
+    moments: { bus: get('busMoment'), victory: get('victoryMoment') },
+    slots,
+    other,
+    shuffle,
+    presetId: group.equippedPresetId ?? null,
+    updatedAt: group.updatedTime ?? null,
+    group,
+  };
 }
 
-function loadoutSlots(loadout: LockerLoadout): LockerSlot[] {
-  return [
-    loadout.character,
-    loadout.backpack,
-    loadout.pickaxe,
-    loadout.glider,
-    loadout.contrail,
-    loadout.musicPack,
-    loadout.loadingScreen,
-    ...loadout.dances,
-    ...loadout.itemWraps,
-  ].filter(nonNull);
+function toPreset(raw: LockerLoadoutGroupPreset): LockerPreset {
+  return {
+    id: raw.presetId,
+    itemId: raw.athenaItemId,
+    name: raw.displayName,
+    favorite: raw.presetFavoriteStatus === 'FAVORITED',
+    createdAt: raw.creationTime ?? null,
+    updatedAt: raw.updatedTime ?? null,
+    loadouts: raw.loadouts ?? {},
+  };
 }
 
-function enrichSlot(slot: LockerItem | LockerSlot, map: Map<string, AnyCosmetic>): void {
-  const cosmetic = map.get(slot.cosmeticId.toLowerCase()) ?? null;
-  slot.cosmetic = cosmetic;
-  slot.name = cosmetic ? cosmeticName(cosmetic) : null;
-  slot.imageUrl = cosmetic ? cosmeticImage(cosmetic) : null;
+function toSchemaPreset(raw: LockerLoadoutPreset): LockerSchemaPreset {
+  return {
+    id: raw.presetId,
+    itemId: raw.athenaItemId,
+    index: raw.presetIndex,
+    name: raw.displayName ?? null,
+    schema: raw.loadoutType,
+    items: (raw.loadoutSlots ?? []).map((entry) => toEquipped(raw.loadoutType, entry)).filter(nonNull),
+    createdAt: raw.creationTime ?? null,
+    updatedAt: raw.updatedTime ?? null,
+  };
 }
 
-function nonNull<T>(value: T | null): value is T {
-  return value !== null;
+function equippedItems(loadout: LockerLoadout): LockerEquippedItem[] {
+  return [...Object.values(loadout.slots), ...loadout.other].filter(nonNull);
 }
 
-function buildItemToSlot(category: LockerCategoryValue, itemId: string | null | undefined): string {
-  if (!itemId) return '';
-  if (itemId.includes(':')) return itemId;
-  return `${CATEGORY_BACKEND[category]}:${itemId}`;
+function enrich(target: LockerItem | LockerEquippedItem, map: Map<string, AnyCosmetic>): void {
+  const cosmetic = map.get(target.cosmeticId.toLowerCase()) ?? null;
+  target.cosmetic = cosmetic;
+  target.name = cosmetic ? cosmeticName(cosmetic) : null;
+  target.imageUrl = cosmetic ? cosmeticImage(cosmetic) : null;
 }
 
-function normalizeVariant(variant: LockerVariantUpdate): { channel: string; active: string; owned: string[] } {
-  return { channel: variant.channel, active: variant.active, owned: variant.owned ?? [] };
-}
-
-function modularSlots(slots: ModularSlotInput[]): Array<Record<string, unknown>> {
-  return slots.map((slot) => {
-    const entry: Record<string, unknown> = { slot_template: slot.slotTemplate };
-    if (slot.equippedItem) entry['equipped_item'] = slot.equippedItem;
-    if (slot.customizations && slot.customizations.length > 0) {
-      entry['customization_info'] = slot.customizations.map((info) => ({
-        channel_tag: info.channelTag,
-        variant_tag: info.variantTag,
-      }));
+function cosmeticImage(cosmetic: AnyCosmetic): string | null {
+  const value = cosmetic as unknown as Record<string, unknown>;
+  const images = value['images'] as Record<string, unknown> | undefined;
+  if (images) {
+    for (const key of ['icon', 'featured', 'large', 'small', 'smallIcon', 'wide']) {
+      if (typeof images[key] === 'string') return images[key] as string;
     }
-    return entry;
+  }
+  return typeof value['albumArt'] === 'string' ? (value['albumArt'] as string) : null;
+}
+
+function cosmeticName(cosmetic: AnyCosmetic): string | null {
+  const value = cosmetic as unknown as Record<string, unknown>;
+  if (typeof value['name'] === 'string') return value['name'] as string;
+  return typeof value['title'] === 'string' ? (value['title'] as string) : null;
+}
+
+function requireName(name: unknown): void {
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    throw new ValidationError('"name" must be a non-empty string', 'name');
+  }
+}
+
+function requireIds(itemIds: unknown): void {
+  if (!Array.isArray(itemIds) || itemIds.length === 0) {
+    throw new ValidationError('"itemIds" must be a non-empty array', 'itemIds');
+  }
+}
+
+function uuid(): string {
+  const crypto = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (crypto?.randomUUID) return crypto.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
+    const random = Math.floor(Math.random() * 16);
+    return (char === 'x' ? random : (random & 0x3) | 0x8).toString(16);
   });
 }
 
-function bannerName(value: string): string {
-  const idx = value.indexOf(':');
-  return idx < 0 ? value : value.slice(idx + 1);
+function nonNull<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
 }

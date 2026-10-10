@@ -104,8 +104,75 @@ interface GiftOptions {
   priceIndex?: number;          // which price row to charge (default 0)
   currencySubType?: string;     // override the currency subtype
   price?: number;               // override the per-receiver price
+  precheck?: boolean;           // check every receiver before sending (default true)
   signal?: AbortSignal;
 }
+```
+
+Before sending, every receiver is checked with the gift-eligibility endpoint. If anyone can't receive the gift, nothing is sent and a [`ShopError`](#shoperror) says why. Pass `precheck: false` to skip the check; a failed gift still throws a `ShopError`.
+
+### checkGift
+<Badge type="info" text="method" />
+
+```ts
+checkGift(target: string | string[]): Promise<GiftEligibility[]>
+```
+
+Checks each receiver without sending anything. Returns one `{ accountId, offerId, eligible, reason, message, price, items }` per receiver; `reason` is a `ShopErrorReason` such as `already-owned`, or `null` when the receiver is eligible.
+
+```ts
+for (const check of await entry.checkGift(['FriendA', 'FriendB'])) {
+  console.log(check.accountId, check.eligible ? 'ok' : check.message);
+}
+```
+
+### purchase
+<Badge type="info" text="method" />
+
+```ts
+purchase(options?: { quantity?: number; priceIndex?: number; price?: number; currency?: string; currencySubType?: string; signal?: AbortSignal }): Promise<PurchaseResult>
+```
+
+Buys the offer for the signed-in account with `PurchaseCatalogEntry`. This **spends V-Bucks**. It resolves to `{ offerId, quantity, totalPrice, items, response }` and throws a `ShopError` such as `not-enough-vbucks` or `already-owned`. `shop.purchase(entryOrName)` does the same from the shop.
+
+## ShopError
+<Badge type="tip" text="class" />
+
+Every gift, purchase, refund and creator-code failure is thrown as a `ShopError` with a readable message:
+
+| Field | Description |
+| --- | --- |
+| `reason` | `not-enough-vbucks`, `already-owned`, `not-friends`, `gifts-disabled`, `recipient-not-eligible`, `gift-limit-reached`, `offer-unavailable`, `refund-unavailable`, `invalid-creator` or `unknown`. |
+| `errorCode` | The raw Epic error code. |
+| `offerId`, `accountIds` | What the failed action was about. |
+| `cause` | The original `EpicApiError`. |
+
+```ts
+try {
+  await entry.gift('FriendName');
+} catch (error) {
+  if (error instanceof ShopError) console.log(error.reason, error.message);
+}
+```
+
+`shopErrorReason(errorCode)` and `toShopError(error, context)` are exported for mapping your own errors.
+
+## Purchases & refunds
+<Badge type="info" text="method" />
+
+```ts
+session.purchaseHistory(): Promise<PurchaseHistory>
+session.refund(purchaseId: string, options?: { quickReturn?: boolean }): Promise<MCPResponse>
+```
+
+`purchaseHistory` reads `mtx_purchase_history` from `common_core`: `{ refundCredits, refundsUsed, tokenRefreshReferenceTime, purchases }`. Purchases are newest first, each with `purchaseId`, `offerId`, `purchaseDate`, `totalMtxPaid`, `freeRefundEligible`, `refundType` and the granted `items`.
+
+`refund` returns a purchase with `RefundMtxPurchase`. Pass `quickReturn: true` for the free 24-hour return, which uses no refund ticket. Failures throw a `ShopError` with reason `refund-unavailable`.
+
+```ts
+const history = await session.purchaseHistory();
+const latest = history.purchases[0];
+if (latest?.freeRefundEligible) await session.refund(latest.purchaseId, { quickReturn: true });
 ```
 
 ## Gifting
@@ -119,6 +186,9 @@ The standalone helper behind every gift — reach it with `session.gifting()` or
 | `giftEntry(entry, target, options?)` | Gift a single `ShopEntry`. |
 | `giftEntries(entries, target, options?)` | Gift many entries (alias `giftMany`). |
 | `setReceiveGiftsEnabled(enabled)` | `SetReceiveGiftsEnabled` — toggle whether others can gift you. |
+| `checkEligibility(offer, target)` | Check receivers for any offer id, without sending. |
+| `purchase(offerId, { price })` | Buy a raw offer id for yourself. |
+| `purchaseEntry(entry, options?)` | Buy a `ShopEntry` for yourself. |
 
 ```ts
 const gifting = session.gifting();

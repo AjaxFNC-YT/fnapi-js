@@ -1,4 +1,4 @@
-import type { CacheOptions, FetchLike, QueryParams, RetryOptions } from '../core/types.js';
+import type { CacheOptions, FetchLike, QueryParams, RequestCacheOptions, RetryOptions } from '../core/types.js';
 
 export interface DillyAPIOptions {
   baseUrl?: string;
@@ -14,7 +14,7 @@ export interface DillyAPIOptions {
 export interface DillyBaseOptions {
   signal?: AbortSignal;
   timeout?: number;
-  cache?: boolean;
+  cache?: boolean | RequestCacheOptions;
   headers?: Record<string, string>;
 }
 

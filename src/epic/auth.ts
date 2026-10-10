@@ -82,6 +82,8 @@ function isPendingError(error: unknown): 'pending' | 'slow_down' | null {
   return null;
 }
 
+const REPLAYABLE_GRANTS = new Set<GrantType>(['device_auth', 'client_credentials']);
+
 export class AuthManager {
   constructor(private readonly rest: EpicRestClient) {}
 
@@ -107,6 +109,7 @@ export class AuthManager {
     const requestOptions = {
       form,
       basic: client,
+      idempotent: REPLAYABLE_GRANTS.has(grantType),
       ...(options.deviceId ? { deviceId: options.deviceId } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
       ...(options.timeout !== undefined ? { timeout: options.timeout } : {}),

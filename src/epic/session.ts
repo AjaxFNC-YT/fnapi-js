@@ -1,4 +1,5 @@
 import { ConfigurationError, ValidationError } from '../core/errors.js';
+import type { RequestCacheOptions } from '../core/types.js';
 import { AccountManager, DeviceAuthManager } from './account.js';
 import type { AuthManager, ExchangeCodeOptions, TokenRequestOptions } from './auth.js';
 import {
@@ -19,8 +20,14 @@ import {
   type ChatMessage,
   type ChatSendResult,
   type ConversationData,
+  type EosOwnPresence,
 } from './chat.js';
-import { ConnectClient, normalizeConnectPresence, type ConnectClientOptions } from './connect.js';
+import {
+  ConnectClient,
+  normalizeConnectPresence,
+  type ConnectClientOptions,
+  type ConnectWebSocketFactory,
+} from './connect.js';
 import type {
   MCPClient,
   MCPOperation,
@@ -36,7 +43,14 @@ import {
   type EosProductUserMapping,
   type EosToken,
   type EosTokenOptions,
+  type LockerActiveLoadoutGroup,
+  type LockerCosmeticData,
+  type LockerCosmeticDataOptions,
+  type LockerCosmeticDataPage,
+  type LockerGroupPresetInput,
   type LockerItemsResponse,
+  type LockerLoadoutGroupPreset,
+  type LockerVariantTag,
 } from './eos.js';
 import type {
   BlocklistEntry,
@@ -56,9 +70,19 @@ import type {
   HabaneroTracksOptions,
   RankingType,
 } from './habanero.js';
+import { HABANERO_MAX_BULK_ACCOUNTS } from './habanero.js';
+import { toRankedStanding, type RankedStanding, type RankedStandingOptions } from './ranked.js';
 import { LiveClient, type LiveClientOptions } from './live.js';
 import { Party, type PartyClient } from './party.js';
-import { Shop, Gifting, type StorefrontCatalog, type ShopFetchOptions } from './shop.js';
+import {
+  Shop,
+  Gifting,
+  parsePurchaseHistory,
+  toShopError,
+  type PurchaseHistory,
+  type StorefrontCatalog,
+  type ShopFetchOptions,
+} from './shop.js';
 import type {
   FortniteGameManager,
   BrInventory,
@@ -67,6 +91,8 @@ import type {
   VbucksBalance,
   CommonCoreProfile,
   MtxPlatform,
+  FortniteVersion,
+  GiftEligibilityResponse,
 } from './game.js';
 import type { LightswitchManager, LightswitchStatus, LightswitchOptions } from './lightswitch.js';
 import type { SocialBanManager, SocialBanStatus, SocialBanOptions } from './socialBan.js';
@@ -78,6 +104,53 @@ import type {
   PresenceOptions,
 } from './presence.js';
 import { XmppClient } from './xmpp.js';
+import type { ContentPagesManager } from './content.js';
+import type { QuestProgressOptions, QuestProgressResponse, QuestService } from './quests.js';
+import {
+  toIsland,
+  type CreatorPage,
+  type CreatorPageOptions,
+  type Island,
+  type LinkLookup,
+  type LinkLookupOptions,
+  type LinkRelated,
+  type LinksBaseOptions,
+  type LinksManager,
+} from './links.js';
+import {
+  toTournaments,
+  type EventHistoryOptions,
+  type EventLeaderboard,
+  type EventLeaderboardOptions,
+  type EventPlayer,
+  type EventScore,
+  type EventScoresOptions,
+  type EventTokens,
+  type EventsBaseOptions,
+  type EventsData,
+  type EventsDataOptions,
+  type EventsManager,
+  type Tournament,
+  type TournamentListOptions,
+} from './events.js';
+import type { MotdItem, MotdManager, MotdOptions } from './motd.js';
+import {
+  toIslandKey,
+  type ContentServiceManager,
+  type CookedContentPackage,
+  type CookedPackageOptions,
+  type FortniteBuild,
+  type IslandKey,
+  type IslandLaunchResult,
+} from './contentService.js';
+import type {
+  LauncherApk,
+  LauncherAppAsset,
+  LauncherAsset,
+  LauncherBuild,
+  LauncherBuildOptions,
+  LauncherManager,
+} from './launcher.js';
 import type { FriendPresence, XmppClientOptions } from './xmpp.js';
 import type {
   StatsProxyManager,
@@ -178,9 +251,17 @@ export interface EpicAuthSessionInit {
   playtime: PlaytimeManager;
   library: LibraryManager;
   status: EpicStatusManager;
+  motd: MotdManager;
+  contentService: ContentServiceManager;
+  launcher: LauncherManager;
+  events: EventsManager;
+  links: LinksManager;
+  quests: QuestService;
+  content: ContentPagesManager;
   client: AuthClient;
   token: OAuthToken;
   allowCustomClients?: boolean;
+  connectWebSocket?: ConnectWebSocketFactory;
 }
 
 const EOS_REFRESH_THRESHOLD_MS = 30_000;
@@ -188,6 +269,23 @@ const EOS_REFRESH_THRESHOLD_MS = 30_000;
 const REFRESH_THRESHOLD_MS = 15_000;
 
 const PRESENCE_REASSERT_MS = 30_000;
+
+function requireQuestIds(ids: unknown[], parameter: string): void {
+  if (ids.some((id) => typeof id !== 'string' || id.length === 0)) {
+    throw new ValidationError(`"${parameter}" must be a quest item id`, parameter);
+  }
+}
+
+function compareStandings(a: RankedStanding, b: RankedStanding): number {
+  if (a.played !== b.played) return a.played ? -1 : 1;
+  if (a.mode.legacy !== b.mode.legacy) return a.mode.legacy ? 1 : -1;
+  return a.mode.name.localeCompare(b.mode.name) || a.rankingType.localeCompare(b.rankingType);
+}
+
+function isStaleConnection(error: unknown): boolean {
+  if (!(error instanceof EpicApiError)) return false;
+  return (error.errorCode ?? '').includes('user_is_not_effectively_connected');
+}
 
 function isReportableMismatch(error: unknown): boolean {
   if (!(error instanceof EpicApiError)) return false;
@@ -218,12 +316,20 @@ export class EpicAuthSession {
   private readonly playtimeManager: PlaytimeManager;
   private readonly libraryManager: LibraryManager;
   private readonly statusManager: EpicStatusManager;
+  private readonly motdManager: MotdManager;
+  private readonly contentServiceManager: ContentServiceManager;
+  private readonly eventsManager: EventsManager;
+  private readonly linksManager: LinksManager;
+  private readonly questService: QuestService;
+  private readonly contentPages: ContentPagesManager;
+  private readonly launcherManager: LauncherManager;
   private readonly allowCustomClients: boolean;
+  private readonly connectWebSocket: ConnectWebSocketFactory | undefined;
   private eosTokenValue: EosToken | null = null;
   private easTokenValue: EasToken | null = null;
   private userEasTokenValue: EasToken | null = null;
   private androidTokenValue: OAuthToken | null = null;
-  private launcherTokenValue: OAuthToken | null = null;
+  private readonly exchangedTokens = new Map<string, OAuthToken>();
   private xmppClient: XmppClient | null = null;
   private chatKeypair: ChatKeypair | null = null;
   private chatKeyJwt: string | null = null;
@@ -257,7 +363,15 @@ export class EpicAuthSession {
     this.playtimeManager = init.playtime;
     this.libraryManager = init.library;
     this.statusManager = init.status;
+    this.motdManager = init.motd;
+    this.contentServiceManager = init.contentService;
+    this.eventsManager = init.events;
+    this.linksManager = init.links;
+    this.questService = init.quests;
+    this.contentPages = init.content;
+    this.launcherManager = init.launcher;
     this.allowCustomClients = init.allowCustomClients ?? false;
+    this.connectWebSocket = init.connectWebSocket;
     this.client = init.client;
     this.tokenValue = init.token;
   }
@@ -368,8 +482,16 @@ export class EpicAuthSession {
       playtime: this.playtimeManager,
       library: this.libraryManager,
       status: this.statusManager,
+      motd: this.motdManager,
+      contentService: this.contentServiceManager,
+      launcher: this.launcherManager,
+      events: this.eventsManager,
+      links: this.linksManager,
+      quests: this.questService,
+      content: this.contentPages,
       client: target,
       token,
+      ...(this.connectWebSocket ? { connectWebSocket: this.connectWebSocket } : {}),
       allowCustomClients: this.allowCustomClients,
     });
   }
@@ -388,6 +510,69 @@ export class EpicAuthSession {
     const accountId = this.requireAccountId();
     const eos = await this.eosToken(options);
     return this.lockerService.items(eos.access_token, accountId, options);
+  }
+
+  async lockerCosmeticPage(options?: LockerCosmeticDataOptions): Promise<LockerCosmeticDataPage> {
+    const accountId = this.requireAccountId();
+    const eos = await this.eosToken(options);
+    return this.lockerService.cosmeticData(eos.access_token, accountId, options);
+  }
+
+  async lockerCosmetics(options?: EosTokenOptions): Promise<LockerCosmeticData[]> {
+    const accountId = this.requireAccountId();
+    const eos = await this.eosToken(options);
+    return this.lockerService.allCosmeticData(eos.access_token, accountId, options);
+  }
+
+  async setActiveLoadoutGroup(
+    group: Pick<LockerActiveLoadoutGroup, 'loadouts' | 'equippedPresetId' | 'equippedPresetItemId'>,
+    options?: EosTokenOptions,
+  ): Promise<LockerActiveLoadoutGroup> {
+    const accountId = this.requireAccountId();
+    const eos = await this.eosToken(options);
+    return this.lockerService.setActiveLoadoutGroup(eos.access_token, accountId, group, options);
+  }
+
+  async putLoadoutGroupPreset(
+    presetId: string,
+    preset: LockerGroupPresetInput,
+    options?: EosTokenOptions,
+  ): Promise<LockerLoadoutGroupPreset> {
+    const accountId = this.requireAccountId();
+    const eos = await this.eosToken(options);
+    return this.lockerService.putLoadoutGroupPreset(eos.access_token, accountId, presetId, preset, options);
+  }
+
+  async updateLoadoutGroupPreset(
+    presetId: string,
+    preset: Pick<LockerGroupPresetInput, 'displayName' | 'loadouts'>,
+    options?: EosTokenOptions,
+  ): Promise<LockerLoadoutGroupPreset> {
+    const accountId = this.requireAccountId();
+    const eos = await this.eosToken(options);
+    return this.lockerService.updateLoadoutGroupPreset(eos.access_token, accountId, presetId, preset, options);
+  }
+
+  async deleteLoadoutGroupPreset(presetId: string, options?: EosTokenOptions): Promise<LockerLoadoutGroupPreset> {
+    const accountId = this.requireAccountId();
+    const eos = await this.eosToken(options);
+    return this.lockerService.deleteLoadoutGroupPreset(eos.access_token, accountId, presetId, options);
+  }
+
+  async setCompanionName(cosmeticItemId: string, companionName: string, options?: EosTokenOptions): Promise<void> {
+    const accountId = this.requireAccountId();
+    const eos = await this.eosToken(options);
+    await this.lockerService.setCompanionName(eos.access_token, accountId, cosmeticItemId, companionName, options);
+  }
+
+  async lockInImmutableItem(
+    itemIdentifier: string,
+    variants: Record<string, LockerVariantTag>,
+    options?: EosTokenOptions,
+  ): Promise<void> {
+    const accountId = this.requireAccountId();
+    const eos = await this.eosToken(options);
+    await this.lockerService.lockInImmutableItem(eos.access_token, accountId, itemIdentifier, variants, options);
   }
 
   async easToken(options?: EosTokenOptions): Promise<EasToken> {
@@ -431,6 +616,153 @@ export class EpicAuthSession {
   async shop(options?: ShopFetchOptions): Promise<Shop> {
     const raw = await this.storefrontCatalog<StorefrontCatalog>(options);
     return new Shop(this, raw);
+  }
+
+  async giftEligibility(
+    recipientId: string,
+    offerId: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<GiftEligibilityResponse> {
+    const token = await this.ensureValid();
+    return this.gameManager.giftEligibility(token, recipientId, offerId, options);
+  }
+
+  async purchaseHistory(options?: { signal?: AbortSignal }): Promise<PurchaseHistory> {
+    return parsePurchaseHistory(await this.commonCoreStats(options));
+  }
+
+  async refund(
+    purchaseId: string,
+    options?: { quickReturn?: boolean; signal?: AbortSignal },
+  ): Promise<MCPResponse> {
+    if (typeof purchaseId !== 'string' || purchaseId.trim().length === 0) {
+      throw new ValidationError('"purchaseId" is required and must be a non-empty string', 'purchaseId');
+    }
+    try {
+      return await this.mcpOperation('RefundMtxPurchase', {
+        profileId: 'common_core',
+        payload: { purchaseId, quickReturn: options?.quickReturn ?? false, gameContext: 'Frontend.AthenaLobby' },
+        ...(options?.signal ? { signal: options.signal } : {}),
+      });
+    } catch (error) {
+      throw toShopError(error);
+    }
+  }
+
+  async supportACreator(options?: { signal?: AbortSignal }): Promise<{ code: string; setAt: string | null; affiliateId: string | null } | null> {
+    const stats = await this.commonCoreStats(options);
+    const code = stats['mtx_affiliate'];
+    if (typeof code !== 'string' || code.length === 0) return null;
+    return {
+      code,
+      setAt: typeof stats['mtx_affiliate_set_time'] === 'string' ? stats['mtx_affiliate_set_time'] : null,
+      affiliateId: typeof stats['mtx_affiliate_id'] === 'string' ? stats['mtx_affiliate_id'] : null,
+    };
+  }
+
+  async setSupportACreator(code: string, options?: { signal?: AbortSignal }): Promise<MCPResponse> {
+    if (typeof code !== 'string' || code.trim().length === 0) {
+      throw new ValidationError('"code" is required and must be a non-empty string', 'code');
+    }
+    try {
+      return await this.mcpOperation('SetAffiliateName', {
+        profileId: 'common_core',
+        payload: { affiliateName: code.trim() },
+        ...(options?.signal ? { signal: options.signal } : {}),
+      });
+    } catch (error) {
+      throw toShopError(error);
+    }
+  }
+
+  claimMfaReward(options?: { stw?: boolean; signal?: AbortSignal }): Promise<MCPResponse> {
+    return this.mcpOperation('ClaimMfaEnabled', {
+      profileId: 'common_core',
+      payload: { bClaimForStw: options?.stw ?? false },
+      ...(options?.signal ? { signal: options.signal } : {}),
+    });
+  }
+
+  markBansViewed(options?: { signal?: AbortSignal }): Promise<MCPResponse> {
+    return this.mcpOperation('SetMatchmakingBansViewed', {
+      profileId: 'common_core',
+      payload: {},
+      ...(options?.signal ? { signal: options.signal } : {}),
+    });
+  }
+
+  skipTutorial(options?: { signal?: AbortSignal }): Promise<MCPResponse> {
+    return this.mcpOperation('SkipTutorial', {
+      profileId: 'campaign',
+      payload: {},
+      ...(options?.signal ? { signal: options.signal } : {}),
+    });
+  }
+
+  async questProgress(options: QuestProgressOptions = {}): Promise<QuestProgressResponse> {
+    const eos = await this.eosToken(options.deploymentId ? { deploymentId: options.deploymentId } : {});
+    return this.questService.progress(eos.access_token, this.requireAccountId(), options);
+  }
+
+  questLogin(profile: 'athena' | 'campaign' = 'athena', options?: { signal?: AbortSignal }): Promise<MCPResponse> {
+    return this.mcpOperation('ClientQuestLogin', {
+      profileId: profile,
+      payload: { streamingAppKey: '' },
+      ...(options?.signal ? { signal: options.signal } : {}),
+    });
+  }
+
+  claimQuestReward(
+    questId: string,
+    options: { profile?: 'athena' | 'campaign'; selectedRewardIndex?: number; signal?: AbortSignal } = {},
+  ): Promise<MCPResponse> {
+    requireQuestIds([questId], 'questId');
+    return this.mcpOperation('ClaimQuestReward', {
+      profileId: options.profile ?? 'athena',
+      payload: { questId, selectedRewardIndex: options.selectedRewardIndex ?? 0 },
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+  }
+
+  rerollDailyQuest(
+    questId: string,
+    options: { profile?: 'athena' | 'campaign'; signal?: AbortSignal } = {},
+  ): Promise<MCPResponse> {
+    requireQuestIds([questId], 'questId');
+    return this.mcpOperation('FortRerollDailyQuest', {
+      profileId: options.profile ?? 'campaign',
+      payload: { questId },
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+  }
+
+  trackQuests(templateIds: string[], options?: { signal?: AbortSignal }): Promise<MCPResponse> {
+    if (!Array.isArray(templateIds) || templateIds.some((id) => typeof id !== 'string' || id.length === 0)) {
+      throw new ValidationError('"templateIds" must be an array of quest template ids', 'templateIds');
+    }
+    return this.mcpOperation('AthenaTrackQuests', {
+      profileId: 'athena',
+      payload: { trackedQuestTemplateIds: templateIds.map((id) => (id.includes(':') ? id : `Quest:${id}`)) },
+      ...(options?.signal ? { signal: options.signal } : {}),
+    });
+  }
+
+  pinStwQuests(questIds: string[], options?: { signal?: AbortSignal }): Promise<MCPResponse> {
+    if (!Array.isArray(questIds)) throw new ValidationError('"questIds" must be an array', 'questIds');
+    if (questIds.length > 0) requireQuestIds(questIds, 'questIds');
+    return this.mcpOperation('SetPinnedQuests', {
+      profileId: 'campaign',
+      payload: { pinnedQuestIds: questIds },
+      ...(options?.signal ? { signal: options.signal } : {}),
+    });
+  }
+
+  private async commonCoreStats(options?: { signal?: AbortSignal }): Promise<Record<string, unknown>> {
+    const response = await this.queryProfile<{ profile?: { stats?: { attributes?: Record<string, unknown> } } }>(
+      'common_core',
+      options?.signal ? { signal: options.signal } : {},
+    );
+    return response.profileChanges[0]?.profile?.stats?.attributes ?? {};
   }
 
   gifting(): Gifting {
@@ -719,54 +1051,125 @@ export class EpicAuthSession {
     return this.friendsManager.unblock(this.accessToken, this.requireAccountId(), userId, options);
   }
 
-  rankedTracks(options?: HabaneroTracksOptions): Promise<HabaneroTrack[]> {
-    return this.habaneroManager.tracks(this.accessToken, options);
+  async rankedTracks(options?: HabaneroTracksOptions): Promise<HabaneroTrack[]> {
+    return this.habaneroManager.tracks(await this.ensureValid(), options);
   }
 
-  rankedTrack(trackguid: string, options?: HabaneroBaseOptions): Promise<HabaneroTrack> {
-    return this.habaneroManager.trackByGuid(this.accessToken, trackguid, options);
+  async rankedTrack(trackguid: string, options?: HabaneroBaseOptions): Promise<HabaneroTrack> {
+    return this.habaneroManager.trackByGuid(await this.ensureValid(), trackguid, options);
   }
 
-  rankedActiveTracks(startDate: string, options?: HabaneroBaseOptions): Promise<HabaneroTrack[]> {
-    return this.habaneroManager.activeTracks(this.accessToken, startDate, options);
+  async rankedActiveTracks(startDate: string, options?: HabaneroBaseOptions): Promise<HabaneroTrack[]> {
+    return this.habaneroManager.activeTracks(await this.ensureValid(), startDate, options);
   }
 
-  rankedProgress(
+  async rankedProgress(
     trackguid: string,
     accountId?: string,
     options?: HabaneroBaseOptions,
   ): Promise<HabaneroProgress> {
     return this.habaneroManager.progress(
-      this.accessToken,
+      await this.ensureValid(),
       accountId ?? this.requireAccountId(),
       trackguid,
       options,
     );
   }
 
-  rankedProgressAll(accountId?: string, options?: HabaneroProgressOptions): Promise<HabaneroProgress[]> {
-    return this.habaneroManager.allProgress(this.accessToken, accountId ?? this.requireAccountId(), options);
+  async rankedProgressAll(accountId?: string, options?: HabaneroProgressOptions): Promise<HabaneroProgress[]> {
+    return this.habaneroManager.allProgress(await this.ensureValid(), accountId ?? this.requireAccountId(), options);
   }
 
-  rankedProgressBulk(
+  async rankedProgressBulk(
     trackguid: string,
     accountIds: string[],
     options?: HabaneroBaseOptions,
   ): Promise<HabaneroProgress[]> {
-    return this.habaneroManager.bulkProgress(this.accessToken, trackguid, accountIds, options);
+    return this.habaneroManager.bulkProgress(await this.ensureValid(), trackguid, accountIds, options);
   }
 
-  rankedProgressBulkByType(
+  async rankedProgressBulkByType(
     rankingType: RankingType | (string & {}),
     accountIds: string[],
     options?: HabaneroRankingTypeOptions,
   ): Promise<HabaneroProgress[]> {
     return this.habaneroManager.bulkProgressByRankingType(
-      this.accessToken,
+      await this.ensureValid(),
       rankingType,
       accountIds,
       options,
     );
+  }
+
+  async rankedCurrentTracks(options?: { signal?: AbortSignal; cache?: boolean | RequestCacheOptions }): Promise<HabaneroTrack[]> {
+    const now = Date.now();
+    const tracks = await this.rankedTracks({
+      endsAfter: new Date(now - (now % 3_600_000)).toISOString(),
+      cache: options?.cache ?? { ttl: 300_000 },
+      ...(options?.signal ? { signal: options.signal } : {}),
+    });
+    return tracks.filter((track) => Date.parse(track.beginTime) <= now && Date.parse(track.endTime) > now);
+  }
+
+  async rankedStandings(
+    accountId?: string,
+    options?: {
+      history?: boolean;
+      playedOnly?: boolean;
+      includeLegacy?: boolean;
+      unrealLegendTop?: number;
+      signal?: AbortSignal;
+    },
+  ): Promise<RankedStanding[]> {
+    const id = accountId ?? this.requireAccountId();
+    const signal = options?.signal ? { signal: options.signal } : {};
+    const [progress, tracks] = await Promise.all([
+      this.rankedProgressAll(id, options?.history ? signal : { endsAfter: new Date().toISOString(), ...signal }),
+      options?.history ? this.rankedTracks({ cache: { ttl: 300_000 }, ...signal }) : this.rankedCurrentTracks(signal),
+    ]);
+    const byGuid = new Map(tracks.map((track) => [track.trackguid, track]));
+    const standingOptions: RankedStandingOptions =
+      options?.unrealLegendTop !== undefined ? { unrealLegendTop: options.unrealLegendTop } : {};
+    const standings = progress.map((entry) => toRankedStanding(entry, byGuid.get(entry.trackguid), standingOptions));
+    const visible = options?.history ? standings : standings.filter((standing) => standing.active);
+    return visible
+      .filter((standing) => (options?.playedOnly ? standing.played : true))
+      .filter((standing) => (options?.includeLegacy === false ? !standing.mode.legacy : true))
+      .sort(compareStandings);
+  }
+
+  async rankedStanding(
+    rankingType: RankingType | (string & {}),
+    accountId?: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<RankedStanding | null> {
+    const standings = await this.rankedStandings(accountId, options);
+    return standings.find((standing) => standing.rankingType === rankingType) ?? null;
+  }
+
+  async rankedStandingsBulk(
+    accountIds: string[],
+    options?: { rankingTypes?: string[]; unrealLegendTop?: number; signal?: AbortSignal },
+  ): Promise<Map<string, RankedStanding[]>> {
+    const ids = [...new Set(accountIds)];
+    const signal = options?.signal ? { signal: options.signal } : {};
+    const tracks = (await this.rankedCurrentTracks(signal)).filter(
+      (track) => !options?.rankingTypes || options.rankingTypes.includes(track.rankingType),
+    );
+    const result = new Map<string, RankedStanding[]>(ids.map((id) => [id, []]));
+    for (const track of tracks) {
+      for (let offset = 0; offset < ids.length; offset += HABANERO_MAX_BULK_ACCOUNTS) {
+        const chunk = ids.slice(offset, offset + HABANERO_MAX_BULK_ACCOUNTS);
+        const progress = await this.rankedProgressBulk(track.trackguid, chunk, signal);
+        for (const entry of progress) {
+          result.get(entry.accountId)?.push(
+            toRankedStanding(entry, track, options?.unrealLegendTop !== undefined ? { unrealLegendTop: options.unrealLegendTop } : {}),
+          );
+        }
+      }
+    }
+    for (const standings of result.values()) standings.sort(compareStandings);
+    return result;
   }
 
   private async readCapableToken(options?: { signal?: AbortSignal }): Promise<string> {
@@ -828,28 +1231,189 @@ export class EpicAuthSession {
     return this.auth.killSessions(this.accessToken, killType, options);
   }
 
-  private async launcherToken(options?: TokenRequestOptions): Promise<string> {
-    if (this.launcherTokenValue) {
-      const expiresInMs = new Date(this.launcherTokenValue.expires_at).getTime() - Date.now();
-      if (expiresInMs > REFRESH_THRESHOLD_MS) return this.launcherTokenValue.access_token;
-      if (this.launcherTokenValue.refresh_token) {
-        this.launcherTokenValue = await this.auth.refreshToken(
-          resolveAuthClient('launcherApp'),
-          this.launcherTokenValue.refresh_token,
-          options,
-        );
-        return this.launcherTokenValue.access_token;
+  private launcherToken(options?: TokenRequestOptions): Promise<string> {
+    return this.exchangedToken('launcherApp', options);
+  }
+
+  private valkyrieToken(options?: TokenRequestOptions): Promise<string> {
+    return this.exchangedToken('fortniteValkyrie', options);
+  }
+
+  private async exchangedToken(clientName: 'launcherApp' | 'fortniteValkyrie', options?: TokenRequestOptions): Promise<string> {
+    const target = resolveAuthClient(clientName);
+    const cached = this.exchangedTokens.get(clientName);
+    if (cached) {
+      const expiresInMs = new Date(cached.expires_at).getTime() - Date.now();
+      if (expiresInMs > REFRESH_THRESHOLD_MS) return cached.access_token;
+      if (cached.refresh_token) {
+        const refreshed = await this.auth.refreshToken(target, cached.refresh_token, options);
+        this.exchangedTokens.set(clientName, refreshed);
+        return refreshed.access_token;
       }
     }
-    const target = resolveAuthClient('launcherApp');
     const accessToken = await this.ensureValid();
     const exchange = await this.auth.createExchangeCode(accessToken, {
       consumingClientId: target.clientId,
       ...(options?.signal ? { signal: options.signal } : {}),
       ...(options?.timeout !== undefined ? { timeout: options.timeout } : {}),
     });
-    this.launcherTokenValue = await this.auth.exchangeCode(target, exchange.code, options);
-    return this.launcherTokenValue.access_token;
+    const token = await this.auth.exchangeCode(target, exchange.code, options);
+    this.exchangedTokens.set(clientName, token);
+    return token.access_token;
+  }
+
+  async motds(options?: MotdOptions): Promise<MotdItem[]> {
+    const token = await this.ensureValid();
+    const response = await this.motdManager.target(token, options);
+    return response.contentItems;
+  }
+
+  fortniteVersion(options?: { signal?: AbortSignal }): Promise<FortniteVersion> {
+    return this.gameManager.version(options);
+  }
+
+  async fortniteBuild(options?: LauncherBuildOptions): Promise<FortniteBuild> {
+    const token = await this.launcherToken();
+    return this.launcherManager.fortniteBuild(token, options);
+  }
+
+  async launcherBuild(options?: LauncherBuildOptions): Promise<LauncherBuild> {
+    const token = await this.launcherToken();
+    return this.launcherManager.build(token, options);
+  }
+
+  async launcherAssets(
+    options?: Pick<LauncherBuildOptions, 'platform' | 'namespace' | 'label' | 'signal' | 'cache'>,
+  ): Promise<LauncherAsset[]> {
+    const token = await this.launcherToken();
+    return this.launcherManager.assets(token, options);
+  }
+
+  async launcherAsset(
+    options?: Pick<LauncherBuildOptions, 'platform' | 'catalogItemId' | 'appName' | 'label' | 'signal' | 'cache'>,
+  ): Promise<LauncherAppAsset> {
+    const token = await this.launcherToken();
+    return this.launcherManager.asset(token, options);
+  }
+
+  async fortniteApk(options?: Omit<LauncherBuildOptions, 'platform'>): Promise<LauncherApk> {
+    const token = await this.launcherToken();
+    return this.launcherManager.fortniteApk(token, options);
+  }
+
+  async islandPackage(
+    linkCode: string,
+    options?: CookedPackageOptions & { build?: Pick<FortniteBuild, 'major' | 'minor' | 'changelist'> },
+  ): Promise<CookedContentPackage> {
+    const build = options?.build ?? (await this.fortniteBuild());
+    const token = await this.valkyrieToken();
+    return this.contentServiceManager.cookedPackage(token, linkCode, build, options);
+  }
+
+  async islandKeys(
+    linkCode: string,
+    options?: CookedPackageOptions & { build?: Pick<FortniteBuild, 'major' | 'minor' | 'changelist'> },
+  ): Promise<IslandKey[]> {
+    const pack = await this.islandPackage(linkCode, options);
+    if (!pack.isEncrypted) return [];
+    const token = await this.valkyrieToken();
+    const keys = await this.contentServiceManager.moduleKeys(
+      token,
+      [pack.resolved.root],
+      options?.signal ? { signal: options.signal } : {},
+    );
+    return keys.map(toIslandKey);
+  }
+
+  async launchIsland(linkCode: string, options?: { signal?: AbortSignal }): Promise<IslandLaunchResult> {
+    const token = await this.valkyrieToken();
+    return this.contentServiceManager.launch(token, linkCode, options);
+  }
+
+  async island(code: string, options: LinkLookupOptions & { locale?: string } = {}): Promise<Island | null> {
+    const { locale, ...rest } = options;
+    const link = await this.linksManager.mnemonic(await this.ensureValid(), code, rest);
+    return link ? toIsland(link, locale) : null;
+  }
+
+  async islands(
+    codes: Array<string | LinkLookup>,
+    options: LinksBaseOptions & { locale?: string } = {},
+  ): Promise<Island[]> {
+    const { locale, ...rest } = options;
+    const links = await this.linksManager.mnemonics(await this.ensureValid(), codes, rest);
+    return links.map((link) => toIsland(link, locale));
+  }
+
+  async islandRelated(code: string, options?: LinkLookupOptions): Promise<LinkRelated> {
+    return this.linksManager.related(await this.ensureValid(), code, options);
+  }
+
+  async islandVersions(code: string, options: LinksBaseOptions & { locale?: string } = {}): Promise<Island[]> {
+    const { locale, ...rest } = options;
+    const links = await this.linksManager.versions(await this.ensureValid(), code, rest);
+    return links.map((link) => toIsland(link, locale)).sort((a, b) => b.version - a.version);
+  }
+
+  async myIslands(options: LinksBaseOptions & { locale?: string } = {}): Promise<Island[]> {
+    const { locale, ...rest } = options;
+    const links = await this.linksManager.author(await this.ensureValid(), this.requireAccountId(), rest);
+    return links.map((link) => toIsland(link, locale));
+  }
+
+  async creatorIslands(creatorAccountId: string, options?: CreatorPageOptions): Promise<CreatorPage> {
+    return this.linksManager.creatorPage(await this.ensureValid(), creatorAccountId, this.requireAccountId(), options);
+  }
+
+  async tournamentData(options?: EventsDataOptions): Promise<EventsData> {
+    return this.eventsManager.data(await this.ensureValid(), this.requireAccountId(), options);
+  }
+
+  async tournaments(options: TournamentListOptions = {}): Promise<Tournament[]> {
+    const { eligibility, now, ...dataOptions } = options;
+    const [data, display, player] = await Promise.all([
+      this.tournamentData({ cache: { ttl: 60_000 }, ...dataOptions }),
+      this.contentPages.tournaments(options.signal ? { signal: options.signal } : {}).catch(() => []),
+      eligibility === false ? Promise.resolve(null) : this.tournamentPlayer(undefined, { signal: options.signal }),
+    ]);
+    return toTournaments(data, display, {
+      ...(now !== undefined ? { now } : {}),
+      tokens: player?.tokens ?? null,
+    });
+  }
+
+  async tournamentPlayer(accountId?: string, options?: EventsBaseOptions): Promise<EventPlayer> {
+    return this.eventsManager.player(await this.ensureValid(), accountId ?? this.requireAccountId(), options);
+  }
+
+  async tournamentTokens(accountIds?: string[], options?: EventsBaseOptions): Promise<EventTokens> {
+    return this.eventsManager.tokens(await this.ensureValid(), accountIds ?? [this.requireAccountId()], options);
+  }
+
+  async tournamentHistory(
+    eventId: string,
+    options: EventHistoryOptions & { accountId?: string } = {},
+  ): Promise<EventScore[]> {
+    const { accountId, ...rest } = options;
+    return this.eventsManager.history(await this.ensureValid(), eventId, accountId ?? this.requireAccountId(), rest);
+  }
+
+  async tournamentLeaderboard(
+    eventId: string,
+    eventWindowId: string,
+    options?: EventLeaderboardOptions,
+  ): Promise<EventLeaderboard> {
+    return this.eventsManager.leaderboard(
+      await this.ensureValid(),
+      eventId,
+      eventWindowId,
+      this.requireAccountId(),
+      options,
+    );
+  }
+
+  async tournamentScores(eventId: string, eventWindowId: string, options: EventScoresOptions): Promise<EventScore[]> {
+    return this.eventsManager.scores(await this.ensureValid(), eventId, eventWindowId, this.requireAccountId(), options);
   }
 
   async playtime(artifactId?: string, options?: PlaytimeOptions): Promise<PlaytimeInfo> {
@@ -1012,7 +1576,9 @@ export class EpicAuthSession {
     return this.cloudStorageManager.readSystemText(token, filename, options);
   }
 
-  async matchmakingNetCL(options?: MatchmakingOptions): Promise<string> {
+  async matchmakingNetCL(
+    options?: MatchmakingOptions & { cache?: boolean | RequestCacheOptions },
+  ): Promise<string> {
     const token = await this.ensureValid();
     return this.matchmakingManager.netCL(token, options);
   }
@@ -1274,8 +1840,10 @@ export class EpicAuthSession {
       return this.connectClient;
     }
     if (!this.connectClient) {
+      const webSocket = options?.webSocket ?? this.connectWebSocket;
       this.connectClient = new ConnectClient({
         ...options,
+        ...(webSocket ? { webSocket } : {}),
         accountId,
         getAccessToken: async () => (await this.userEasToken()).access_token,
         onConnected: (connectionId) => this.announcePresence(connectionId),
@@ -1290,19 +1858,45 @@ export class EpicAuthSession {
     const accountId = this.requireAccountId();
     const eas = await this.userEasToken();
     await this.chatService.sendPresence(eas.access_token, accountId, connectionId, {
-      ...(this.customStatusValue !== null ? { activity: this.customStatusValue } : {}),
+      activity: this.customStatusValue,
     });
   }
 
   private startPresenceReassert(): void {
     if (this.presenceReassertTimer) return;
     this.presenceReassertTimer = setInterval(() => {
-      const connectionId = this.connectClient?.connection;
-      if (!connectionId || !this.connectClient?.connected) return;
-      void this.announcePresence(connectionId).catch(() => undefined);
+      const client = this.connectClient;
+      const connectionId = client?.connection;
+      if (!client || !connectionId || !client.connected) return;
+      void this.announcePresence(connectionId).catch((error: unknown) => {
+        if (isStaleConnection(error) && client.connection === connectionId) {
+          void client.reconnect().catch(() => undefined);
+        }
+      });
     }, PRESENCE_REASSERT_MS);
     const timer = this.presenceReassertTimer as { unref?: () => void };
     if (typeof timer.unref === 'function') timer.unref();
+  }
+
+  private async publishPresence(
+    options: { activity: string | null; onlineType?: string; signal?: AbortSignal },
+  ): Promise<EosOwnPresence | null> {
+    const accountId = this.requireAccountId();
+    const send = async (): Promise<EosOwnPresence | null> => {
+      const connectionId = this.connectClient?.connection;
+      if (!connectionId) {
+        throw new ConfigurationError('The connect session did not provide a connection id for presence.', 'connect');
+      }
+      const eas = await this.userEasToken(options.signal ? { signal: options.signal } : {});
+      return this.chatService.sendPresence(eas.access_token, accountId, connectionId, options);
+    };
+    try {
+      return await send();
+    } catch (error) {
+      if (!isStaleConnection(error) || !this.connectClient) throw error;
+      await this.connectClient.reconnect();
+      return send();
+    }
   }
 
   private stopPresenceReassert(): void {
@@ -1319,35 +1913,32 @@ export class EpicAuthSession {
     this.connectClient = null;
   }
 
+  get customStatus(): string | null {
+    return this.customStatusValue;
+  }
+
   async setCustomStatus(
     status: string,
     options?: { onlineType?: string; signal?: AbortSignal },
-  ): Promise<void> {
+  ): Promise<EosOwnPresence | null> {
     if (typeof status !== 'string' || status.trim().length === 0) {
       throw new ValidationError('"status" is required and must be a non-empty string', 'status');
     }
-    const accountId = this.requireAccountId();
+    this.requireAccountId();
     this.customStatusValue = status;
     await this.connectEvents();
-    const connectionId = this.connectClient?.connection;
-    if (!connectionId) {
-      throw new ConfigurationError('The connect session did not provide a connection id for presence.', 'connect');
-    }
-    const eas = await this.userEasToken(options?.signal ? { signal: options.signal } : {});
-    await this.chatService.sendPresence(eas.access_token, accountId, connectionId, {
+    return this.publishPresence({
       activity: status,
       ...(options?.onlineType ? { onlineType: options.onlineType } : {}),
       ...(options?.signal ? { signal: options.signal } : {}),
     });
   }
 
-  async clearCustomStatus(options?: { signal?: AbortSignal }): Promise<void> {
+  async clearCustomStatus(options?: { signal?: AbortSignal }): Promise<EosOwnPresence | null> {
     this.customStatusValue = null;
-    const connectionId = this.connectClient?.connection;
-    if (!connectionId) return;
-    const accountId = this.requireAccountId();
-    const eas = await this.userEasToken(options?.signal ? { signal: options.signal } : {});
-    await this.chatService.sendPresence(eas.access_token, accountId, connectionId, {
+    if (!this.connectClient?.connection) return null;
+    return this.publishPresence({
+      activity: null,
       ...(options?.signal ? { signal: options.signal } : {}),
     });
   }
@@ -1432,6 +2023,7 @@ export class EpicAuthSession {
 
   async disconnectLive(): Promise<void> {
     if (!this.liveClientValue) return;
+    this.liveClientValue.stop();
     this.liveClientValue.removeAllListeners();
     this.liveClientValue = null;
     await this.disconnectXmpp();
@@ -1439,6 +2031,7 @@ export class EpicAuthSession {
   }
 
   async logout(options?: { signal?: AbortSignal }): Promise<void> {
+    this.liveClientValue?.stop();
     this.liveClientValue?.removeAllListeners();
     this.liveClientValue = null;
     await this.disconnectXmpp();

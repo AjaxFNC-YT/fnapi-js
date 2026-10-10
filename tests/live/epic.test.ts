@@ -7,7 +7,6 @@ import {
   AuthClients,
   EpicAuthError,
   EpicGamesClient,
-  EpicPermissionError,
   ValidationError,
 } from '../../src/index.js';
 
@@ -112,7 +111,8 @@ describe('live epic device auth login', () => {
     const me = await session.me();
     expect(me.id).toBe(deviceAuth!.accountId);
 
-    await expect(session.listDeviceAuths()).rejects.toBeInstanceOf(EpicPermissionError);
+    const recovered = await session.listDeviceAuths();
+    expect(recovered.some((auth) => auth.deviceId === deviceAuth!.deviceId)).toBe(true);
 
     const pc = await session.switchClient('fortnitePC');
     const auths = await pc.listDeviceAuths();

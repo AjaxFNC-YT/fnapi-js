@@ -24,6 +24,15 @@ class FakeChannel {
     return this;
   }
 
+  off(event: string, listener: (payload: unknown) => void): this {
+    this.listeners.get(event)?.delete(listener);
+    return this;
+  }
+
+  count(event: string): number {
+    return this.listeners.get(event)?.size ?? 0;
+  }
+
   fire(event: string, payload?: unknown): void {
     for (const listener of this.listeners.get(event) ?? []) listener(payload);
   }
@@ -245,6 +254,62 @@ describe('LiveClient dispatch', () => {
 
     expect(disbanded).toHaveBeenCalledWith({ partyId: 'party-9' });
     expect(bot.party).toBeNull();
+  });
+
+  it('can start again after a failed first start', async () => {
+    const xmpp = new FakeChannel();
+    const connectXmpp = vi.fn().mockRejectedValueOnce(new Error('xmpp down')).mockResolvedValue(xmpp);
+    const { bot } = setup({ connectXmpp });
+    await expect(bot.start()).rejects.toThrow('xmpp down');
+    expect(bot.running).toBe(false);
+    await bot.start();
+    expect(bot.running).toBe(true);
+    expect(connectXmpp).toHaveBeenCalledTimes(2);
+  });
+
+  it('detaches every channel listener on stop()', async () => {
+    const { bot, xmpp, events } = setup();
+    await bot.start();
+    expect(xmpp.count('message')).toBe(1);
+    expect(events.count('presence')).toBe(1);
+    bot.stop();
+    expect(xmpp.count('message')).toBe(0);
+    expect(xmpp.count('connected')).toBe(0);
+    expect(events.count('presence')).toBe(0);
+    expect(bot.running).toBe(false);
+  });
+
+  it('forwards reconnecting and resyncs state after an XMPP reconnect', async () => {
+    const { bot, xmpp, session } = setup();
+    await bot.start();
+    const attempts: number[] = [];
+    let reconnected = 0;
+    bot.on('reconnecting', (payload) => attempts.push(payload.attempt));
+    bot.on('reconnected', () => {
+      reconnected += 1;
+    });
+    xmpp.fire('reconnecting', { attempt: 1, delay: 1000 });
+    xmpp.fire('connected');
+    await flush();
+    expect(attempts).toEqual([1]);
+    expect(reconnected).toBe(1);
+    expect(session.friendsListResolved).toHaveBeenCalledTimes(2);
+    expect(session.getParty).toHaveBeenCalledTimes(2);
+  });
+
+  it('resolves the display name of a newly added friend', async () => {
+    const account = vi.fn().mockResolvedValue({ id: 'PAL', displayName: 'Pal' });
+    const { bot, xmpp } = setup({ account });
+    await bot.start();
+    const added: Array<{ accountId: string; displayName?: string }> = [];
+    bot.on('friend:added', (event) => added.push({ accountId: event.accountId, displayName: event.entry.displayName }));
+    xmpp.fire('message', {
+      body: JSON.stringify({ type: FRIEND_NOTIFICATION_TYPE, payload: { status: 'ACCEPTED', accountId: 'PAL' } }),
+    });
+    await flush();
+    expect(account).toHaveBeenCalledWith('PAL');
+    expect(added).toEqual([{ accountId: 'PAL', displayName: 'Pal' }]);
+    expect(bot.friends.get('PAL')?.displayName).toBe('Pal');
   });
 
   it('forwards decoded chat and presence from the connect channel', async () => {

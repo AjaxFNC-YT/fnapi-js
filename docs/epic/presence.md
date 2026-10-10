@@ -71,7 +71,7 @@ The ergonomic view. Merges three wires — the REST snapshot above, the live EOS
 Because the REST snapshot `403`s on the Fortnite clients, the **reliable source is the EOS connect stream** — so connect it first (via [`session.connectEvents()`](./chat) or a [`LiveClient`](./live.md)) and let a moment pass for the initial `presence.v1.UPDATE` frames to arrive. Calling `friendPresences()` cold, before any stream is up, returns an empty list on those clients.
 
 ```ts
-await session.connectEvents({ webSocket: factory }); // ws-backed factory on Node
+await session.connectEvents(); // uses the ws package automatically on Node
 await new Promise((r) => setTimeout(r, 3000));        // let presence frames land
 for (const p of await session.friendPresences()) {
   console.log(`${p.accountId} — ${p.show ?? 'online'} — ${p.statusText ?? ''}`);

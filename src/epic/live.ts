@@ -1,6 +1,6 @@
 import { ValidationError } from '../core/errors.js';
 import type { ConnectClientOptions, ConnectFriendMessage, ConnectPartyMessage, ConnectPresenceUpdate } from './connect.js';
-import { TypedEmitter } from './emitter.js';
+import { TypedEmitter, type Listener } from './emitter.js';
 import type { ResolvedFriendEntry } from './friends.js';
 import {
   decodeNotification,
@@ -80,6 +80,8 @@ export interface PartyInviteDeclinedEvent {
 export interface LiveEventMap {
   connected: void;
   disconnected: { code: number; reason: string };
+  reconnecting: { attempt: number; delay: number };
+  reconnected: void;
   error: Error;
   notification: DecodedNotification;
   'party:invite': PartyInviteEvent;
@@ -139,6 +141,7 @@ export class LiveClient extends TypedEmitter<LiveEventMap> {
   private readonly invites = new Map<string, PartyInviteEvent>();
   private readonly requests = new Map<string, FriendRequestEvent>();
   private started = false;
+  private readonly detachers: Array<() => void> = [];
 
   constructor(session: EpicAuthSession, partyClient: PartyClient, options: LiveClientOptions = {}) {
     super();
@@ -163,32 +166,72 @@ export class LiveClient extends TypedEmitter<LiveEventMap> {
     return this.requests;
   }
 
+  get running(): boolean {
+    return this.started;
+  }
+
   async start(): Promise<this> {
     if (this.started) return this;
     this.started = true;
-    const xmpp = await this.session.connectXmpp(this.options.xmpp);
+    try {
+      const xmpp = await this.session.connectXmpp(this.options.xmpp);
+      this.bind(xmpp, 'message', (message) => {
+        void this.onXmppMessage(message);
+      });
+      this.bind(xmpp, 'disconnected', (payload) => this.emit('disconnected', payload));
+      this.bind(xmpp, 'reconnecting', (payload) => this.emit('reconnecting', payload));
+      this.bind(xmpp, 'connected', () => {
+        void this.resync();
+      });
+      this.bind(xmpp, 'error', (error) => this.emit('error', error));
 
-    xmpp.on('message', (message) => {
-      void this.onXmppMessage(message);
-    });
-    xmpp.on('disconnected', (payload) => this.emit('disconnected', payload));
-    xmpp.on('error', (error) => this.emit('error', error));
-
-    if (this.options.connectEvents !== false) {
-      try {
-        const events = await this.session.connectEvents(this.options.connect);
-        events.on('friend:message', (message) => this.emit('friend:message', message));
-        events.on('party:message', (message) => this.emit('party:message', message));
-        events.on('presence', (presence) => this.emit('presence', presence));
-        events.on('error', (error) => this.emit('error', error));
-      } catch (error) {
-        this.emit('error', error instanceof Error ? error : new Error(String(error)));
+      if (this.options.connectEvents !== false) {
+        try {
+          const events = await this.session.connectEvents(this.options.connect);
+          this.bind(events, 'friend:message', (message) => this.emit('friend:message', message));
+          this.bind(events, 'party:message', (message) => this.emit('party:message', message));
+          this.bind(events, 'presence', (presence) => this.emit('presence', presence));
+          this.bind(events, 'error', (error) => this.emit('error', error));
+        } catch (error) {
+          this.emit('error', error instanceof Error ? error : new Error(String(error)));
+        }
       }
-    }
 
-    await this.seed();
+      await this.seed();
+    } catch (error) {
+      this.detach();
+      this.started = false;
+      throw error;
+    }
     this.emit('connected', undefined);
     return this;
+  }
+
+  stop(): void {
+    this.detach();
+    this.started = false;
+    this.currentParty = null;
+    this.friendCache.clear();
+    this.invites.clear();
+    this.requests.clear();
+  }
+
+  private bind<M extends { error: Error }, K extends keyof M>(
+    emitter: TypedEmitter<M>,
+    event: K,
+    listener: Listener<M[K]>,
+  ): void {
+    emitter.on(event, listener);
+    this.detachers.push(() => emitter.off(event, listener));
+  }
+
+  private detach(): void {
+    for (const detach of this.detachers.splice(0)) detach();
+  }
+
+  private async resync(): Promise<void> {
+    await this.seed();
+    this.emit('reconnected', undefined);
   }
 
   async refreshParty(): Promise<Party | null> {
@@ -342,6 +385,7 @@ export class LiveClient extends TypedEmitter<LiveEventMap> {
           favorite: decoded.favorite,
           ...(decoded.created ? { created: decoded.created } : {}),
         };
+        await this.resolveFriendEntry(entry);
         this.friendCache.set(decoded.accountId, entry);
         this.emit('friend:added', { accountId: decoded.accountId, entry, raw: decoded.raw });
         return;
@@ -403,6 +447,16 @@ export class LiveClient extends TypedEmitter<LiveEventMap> {
         await this.session.removeFriend(accountId);
       },
     };
+  }
+
+  private async resolveFriendEntry(entry: ResolvedFriendEntry): Promise<void> {
+    try {
+      const account = await this.session.account(entry.accountId);
+      entry.account = account;
+      if (account.displayName) entry.displayName = account.displayName;
+    } catch {
+      // display name stays unresolved
+    }
   }
 
   private async syncParty(partyId: string): Promise<void> {

@@ -24,7 +24,10 @@ export class FnccEndpoint {
     options: FnccBaseOptions | undefined,
     query: QueryParams = {},
   ): Promise<T> {
-    const body = await this.fetchRaw<unknown>(path, options, query);
+    return this.unwrap<T>(await this.fetchRaw<unknown>(path, options, query));
+  }
+
+  private unwrap<T>(body: unknown): T {
     if (
       body !== null &&
       typeof body === 'object' &&
@@ -35,6 +38,25 @@ export class FnccEndpoint {
       return (body as { data: T }).data;
     }
     return body as T;
+  }
+
+  protected async postRaw<T>(
+    path: string,
+    body: unknown,
+    options: FnccBaseOptions | undefined,
+    query: QueryParams = {},
+  ): Promise<T> {
+    const response = await this.rest.post<T>(path, { ...this.requestOptions(options, query), body, cache: false });
+    return response.body;
+  }
+
+  protected async postData<T>(
+    path: string,
+    body: unknown,
+    options: FnccBaseOptions | undefined,
+    query: QueryParams = {},
+  ): Promise<T> {
+    return this.unwrap<T>(await this.postRaw<unknown>(path, body, options, query));
   }
 
   protected buildUrl(path: string, query: QueryParams = {}): string {

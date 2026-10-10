@@ -204,3 +204,63 @@ describe('EpicGamesClient defaults', () => {
     expect(form.get('grant_type')).toBe('client_credentials');
   });
 });
+
+describe('EpicAuthSession custom status', () => {
+  const own = (value?: string) => ({
+    own: {
+      accountId: 'ACC',
+      status: 'online',
+      perNs: [{ status: 'online', ns: 'fn', props: {}, conns: [], ...(value ? { activity: { value } } : {}) }],
+    },
+  });
+
+  function wire(session: unknown, connection: { value: string }) {
+    const events = {
+      get connection() {
+        return connection.value;
+      },
+      connected: true,
+      reconnect: async () => {
+        connection.value = 'conn-2';
+      },
+    };
+    Object.assign(session as object, {
+      userEasToken: async () => ({ access_token: 'EAS' }),
+      connectEvents: async () => events,
+      connectClient: events,
+    });
+    return events;
+  }
+
+  it('returns the presence epic stored', async () => {
+    const { mock, client } = setup({ body: own('hello') });
+    const session = client.session(makeToken());
+    wire(session, { value: 'conn-1' });
+    const presence = await session.setCustomStatus('hello');
+    expect(presence?.perNs[0]?.activity?.value).toBe('hello');
+    expect(JSON.parse(mock.lastRequest().body ?? '{}').activity).toEqual({ value: 'hello' });
+    expect(session.customStatus).toBe('hello');
+  });
+
+  it('reconnects and retries once when epic no longer sees the connection', async () => {
+    const { mock, client } = setup(
+      { status: 404, body: { errorCode: 'errors.com.epicgames.social.presence.user_is_not_effectively_connected' } },
+      { body: own('hello') },
+    );
+    const session = client.session(makeToken());
+    wire(session, { value: 'conn-1' });
+    const presence = await session.setCustomStatus('hello');
+    expect(presence?.perNs[0]?.activity?.value).toBe('hello');
+    expect(mock.requests.map((request) => request.path.split('/').pop())).toEqual(['conn-1', 'conn-2']);
+  });
+
+  it('clears the status with an empty activity', async () => {
+    const { mock, client } = setup({ body: own() });
+    const session = client.session(makeToken());
+    wire(session, { value: 'conn-1' });
+    const presence = await session.clearCustomStatus();
+    expect(presence?.perNs[0]?.activity).toBeUndefined();
+    expect(JSON.parse(mock.lastRequest().body ?? '{}').activity).toEqual({});
+    expect(session.customStatus).toBeNull();
+  });
+});

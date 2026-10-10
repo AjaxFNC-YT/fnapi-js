@@ -554,3 +554,55 @@ describe('XmppClient keepalive and disconnect', () => {
     expect(client.presences.size).toBe(0);
   });
 });
+
+async function handshake(socket: MockWebSocket): Promise<void> {
+  socket.open();
+  socket.serverSend(`<open xmlns="urn:ietf:params:xml:ns:xmpp-framing" from="${HOST}" version="1.0"/>`);
+  socket.serverSend(FEATURES_SASL);
+  socket.serverSend('<success xmlns="urn:ietf:params:xml:ns:xmpp-sasl"/>');
+  socket.serverSend(`<open xmlns="urn:ietf:params:xml:ns:xmpp-framing" from="${HOST}" version="1.0"/>`);
+  socket.serverSend(FEATURES_BIND);
+  socket.serverSend(
+    `<iq type="result" id="bind_1"><bind xmlns="urn:ietf:params:xml:ns:xmpp-bind"><jid>${ACCOUNT}@${HOST}/V2:Fortnite:WIN::ABC</jid></bind></iq>`,
+  );
+  await flush();
+}
+
+describe('XmppClient liveness', () => {
+  it('drops a silent connection after two ping intervals and reconnects', async () => {
+    const { client, sockets } = makeClient({ pingIntervalMs: 20, autoReconnect: true, reconnectInitialDelayMs: 5 });
+    await connect(client, sockets);
+    const closes: number[] = [];
+    client.on('disconnected', (payload) => closes.push(payload.code));
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    expect(closes[0]).toBe(4000);
+    expect(sockets.length).toBeGreaterThanOrEqual(2);
+    await client.disconnect();
+  });
+
+  it('keeps a connection that keeps receiving data', async () => {
+    const { client, sockets } = makeClient({ pingIntervalMs: 30, autoReconnect: true });
+    const socket = await connect(client, sockets);
+    const closes: number[] = [];
+    client.on('disconnected', (payload) => closes.push(payload.code));
+    const feed = setInterval(() => socket.serverSend('<iq type="result" id="ping_x"/>'), 10);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    clearInterval(feed);
+    expect(closes).toEqual([]);
+    expect(client.connected).toBe(true);
+    await client.disconnect();
+  });
+
+  it('reconnect() swaps in a fresh socket and ignores the old one', async () => {
+    const { client, sockets } = makeClient({ autoReconnect: true });
+    const old = await connect(client, sockets);
+    const reconnecting = client.reconnect();
+    await flush();
+    expect(sockets.length).toBe(2);
+    old.serverClose(1006, '');
+    await handshake(sockets[1]!);
+    await reconnecting;
+    expect(client.connected).toBe(true);
+    await client.disconnect();
+  });
+});

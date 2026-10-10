@@ -5,6 +5,7 @@ interface CacheEntry<T> {
 
 export class MemoryCache<T = unknown> {
   private readonly store = new Map<string, CacheEntry<T>>();
+  private readonly pending = new Map<string, Promise<T>>();
   private readonly ttl: number;
   private readonly maxEntries: number;
 
@@ -46,12 +47,30 @@ export class MemoryCache<T = unknown> {
     this.store.set(key, { value, expiresAt: Date.now() + (ttl ?? this.ttl) });
   }
 
+  async wrap(key: string, load: () => Promise<T>, ttl?: number): Promise<T> {
+    const hit = this.get(key);
+    if (hit !== undefined) return hit;
+    const inflight = this.pending.get(key);
+    if (inflight) return inflight;
+    const promise = load()
+      .then((value) => {
+        this.set(key, value, ttl);
+        return value;
+      })
+      .finally(() => {
+        this.pending.delete(key);
+      });
+    this.pending.set(key, promise);
+    return promise;
+  }
+
   delete(key: string): boolean {
     return this.store.delete(key);
   }
 
   clear(): void {
     this.store.clear();
+    this.pending.clear();
   }
 
   prune(): void {

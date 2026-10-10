@@ -1,8 +1,8 @@
 # Locker
 
-The `Locker` reads a signed-in player's cosmetics from the `athena` MCP profile — every owned outfit, back bling, pickaxe, glider, emote, wrap and more, plus the currently equipped loadout. On its own it returns the raw item ids Epic stores. Pass it our [`FortniteAPI`](/fortnite/fortnite-api) cosmetics source and flip the `enrich` flag, and it resolves each item to full cosmetic data **and the image link** from fortnite-api.com.
+The `Locker` drives a signed-in player's locker through Epic's **EOS Locker Service** (`locker/v4`), which is the same system the game uses. It reads every owned cosmetic and the equipped loadout across every section: character, emotes, wraps, banner and lobby, Festival instruments and jam tracks, cars, companions and moments. It equips items with styles and colours, and manages saved presets.
 
-It is a bridge between the two clients, so you construct it with an account-bound `EpicAuthSession` (for the profile) and, optionally, a cosmetics source (for enrichment):
+On its own it returns the ids Epic stores. Pass it the [`FortniteAPI`](/fortnite/fortnite-api) cosmetics source and set `enrich` to resolve each item to full cosmetic data **and its image link**.
 
 ```ts
 import { EpicGamesClient, FortniteAPI, Locker } from 'fnapi-js';
@@ -15,16 +15,19 @@ const locker = new Locker(session, fortnite.cosmetics);
 
 const snapshot = await locker.fetch({ enrich: true });
 console.log(`${snapshot.items.length} cosmetics owned`);
-console.log('equipped skin:', snapshot.loadout.character?.cosmetic?.name);
+console.log('equipped skin:', snapshot.loadout.character?.name);
 console.log('image:', snapshot.loadout.character?.imageUrl);
+
+await locker.equipEmote('EID_Floss', 0);
+await locker.equipWrap('Wrap_121_JupiterZero');
 ```
 
-::: tip Enrichment is opt-in
-Without a cosmetics source (or with `enrich` left off), items come back with `cosmetic: null` and `imageUrl: null` — just the raw locker data. Requesting `enrich: true` **without** a source throws a `ValidationError`. The source is fetched once and cached on the locker.
+::: info Session requirements
+Every call authenticates with EOS Connect under the hood, through `session.eosToken()`, which caches the token. That requires an account-bound session such as device auth or device code, not `client_credentials`.
 :::
 
-::: info Equipped loadout & the EOS Locker Service
-Epic migrated the equipped loadout out of the `athena` MCP profile into a dedicated **EOS Locker Service**. When the `athena` profile no longer carries an equipped character, the locker transparently authenticates with EOS Connect and reads the active loadout group from `locker/v4` to fill `snapshot.loadout`. This is automatic; pass `useLockerService: false` to `fetch` to disable it and use only what the MCP profile reports. It needs an account-bound session (device auth / device code), not `client_credentials`.
+::: tip Enrichment is opt-in
+Without a cosmetics source, or with `enrich` left off, items come back with `name`, `cosmetic` and `imageUrl` set to `null`. Requesting `enrich: true` **without** a source throws a `ValidationError`. The source is fetched once and cached on the locker.
 :::
 
 ## new Locker
@@ -36,33 +39,39 @@ new Locker(session: EpicAuthSession, cosmetics?: LockerCosmeticSource)
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `session` | `EpicAuthSession` | An account-bound session. Its token is used to query the `athena` profile. |
-| `cosmetics` | `LockerCosmeticSource` | Anything with an `all()` returning every cosmetic — pass `client.cosmetics`. Required only for enrichment. |
+| `session` | `EpicAuthSession` | An account-bound session. |
+| `cosmetics` | `LockerCosmeticSource` | Anything with an `all()` that returns every cosmetic. Pass `client.cosmetics`. Only needed for enrichment. |
 
 ## fetch
 <Badge type="info" text="method" />
 
 ```ts
-fetch(options?: { enrich?: boolean; useLockerService?: boolean; signal?: AbortSignal }): Promise<LockerSnapshot>
+fetch(options?: { enrich?: boolean; items?: boolean; signal?: AbortSignal }): Promise<LockerSnapshot>
 ```
 
-Queries the `athena` profile and returns a `LockerSnapshot` — `{ accountId, profileRevision, items, loadout }`. With `enrich: true`, every item and every equipped slot gets its `cosmetic` and `imageUrl` filled in. If the profile has no equipped loadout, the EOS Locker Service is queried to fill it (see the note above); set `useLockerService: false` to skip that.
+Reads the locker and returns `{ accountId, items, loadout, presets, schemaPresets }`:
 
-**Returns:** `Promise<LockerSnapshot>`
+- `items` holds every owned cosmetic. It is paged out of `cosmetic-data`, which takes about 3 requests for a large locker.
+- `loadout` is the active loadout group.
+- `presets` holds the saved full-locker presets.
+- `schemaPresets` holds the older per-section presets, sorted by index.
+
+Pass `items: false` to skip the cosmetic list when you only need the loadout.
 
 ```ts
-const { items, loadout } = await locker.fetch({ enrich: true });
+const { items, loadout, presets } = await locker.fetch({ enrich: true });
 ```
 
-## items / loadout
+## items / loadout / presets
 <Badge type="info" text="method" />
 
 ```ts
-items(options?): Promise<LockerItem[]>
-loadout(options?): Promise<LockerLoadout>
+items(options?: { enrich?: boolean; signal?: AbortSignal }): Promise<LockerItem[]>
+loadout(options?: { enrich?: boolean; signal?: AbortSignal }): Promise<LockerLoadout>
+presets(signal?: AbortSignal): Promise<LockerPreset[]>
 ```
 
-Shortcuts that return just the owned items or just the equipped loadout. Both accept the same options as `fetch`.
+These are shortcuts that make only the requests they need.
 
 ## resolveImage
 <Badge type="info" text="method" />
@@ -71,289 +80,212 @@ Shortcuts that return just the owned items or just the equipped loadout. Both ac
 resolveImage(cosmeticId: string): Promise<string | null>
 ```
 
-Resolves the image link for a single cosmetic id straight from the cosmetics source (case-insensitive), independent of the profile. Returns `null` if the id is unknown or no source was provided.
+Looks a cosmetic id up in the cosmetics source and returns its image link. Accepts a bare id or `Type:id`.
 
-**Returns:** `Promise<string | null>`
+## Equipping
 
-```ts
-const link = await locker.resolveImage('CID_028_Athena_Commando_F');
-```
+Every edit reads the current active loadout group, changes only the targeted slots, and `PUT`s the whole group back. Other sections are never touched. Edits made through one `Locker` run one after another, so concurrent calls cannot overwrite each other. Each edit resolves to the updated `LockerLoadout`.
 
-## setFavorite / markSeen
+Item ids may be bare (`'CID_028_Athena_Commando_F'`) or full template ids (`'AthenaCharacter:cid_028_athena_commando_f'`). Bare ids get the slot's item type, and ids are lowercased the way the service stores them.
+
+### equip / equipMany
 <Badge type="info" text="method" />
 
 ```ts
-setFavorite(itemIds: string[], favorite?: boolean): Promise<MCPResponse>
-markSeen(itemIds: string[]): Promise<MCPResponse>
+equip(slot: LockerSlotName, item: string | null, options?: { variants?: LockerVariantSelection[]; signal?: AbortSignal }): Promise<LockerLoadout>
+equipMany(changes: LockerChanges, signal?: AbortSignal): Promise<LockerLoadout>
 ```
 
-Convenience mutations on the `athena` profile: favourite/unfavourite items (`SetItemFavoriteStatusBatch`) or clear the "new" badge (`MarkItemSeen`). Both take **item ids** (the profile guids from `LockerItem.id`), not cosmetic ids.
+The generic form behind every helper. `null` empties the slot. When the same item is re-equipped without `variants`, its current styles are kept. A new item starts with no styles unless you pass some.
 
 ```ts
-const [first] = await locker.items();
-if (first) await locker.setFavorite([first.id], true);
+await locker.equipMany({
+  character: { item: 'CID_028_Athena_Commando_F', variants: [{ channel: 'Material', variant: 'Mat2' }] },
+  pickaxe: 'DefaultPickaxe',
+  emote0: 'EID_Floss',
+  carBody: 'VehicleCosmetics_Body:carbody_alokin',
+});
 ```
 
-## Editing the locker
+### Helpers
+<Badge type="info" text="method" />
 
-::: warning Real, hard-to-reverse account writes
-Everything below writes to the signed-in account's live locker. There is no dry-run — the outfit, emote or preset changes exactly as the game would change it. These need an account-bound session, not `client_credentials`.
+| Method | Slot |
+| --- | --- |
+| `equipOutfit(id, options?)` | `character` |
+| `equipBackpack(id, options?)` | `backpack` |
+| `equipPickaxe(id, options?)` | `pickaxe` |
+| `equipGlider(id, options?)` | `glider` |
+| `equipContrail(id, options?)` | `contrail` |
+| `equipShoes(id, options?)` | `shoes` |
+| `equipAura(id, options?)` | `aura` |
+| `equipEmote(id, index = 0, options?)` | `emote0`–`emote7` |
+| `equipWrap(id, index?, options?)` | `wrap0`–`wrap6`; no index wraps every slot |
+| `equipJamTrack(id, index = 0, options?)` | `jamTrack0`–`jamTrack7` |
+| `equipInstrument(kind, id, options?)` | `bass`, `guitar`, `drums`, `keyboard`, `microphone` |
+| `equipLoadingScreen(id, options?)` | `loadingScreen` |
+| `equipLobbyMusic(id, options?)` | `lobbyMusic` (`sid_…` ids become `SparksSong`, others `AthenaMusicPack`) |
+| `equipCompanion(id, options?)` | `companion` |
+| `setBanner(icon, color, signal?)` | `bannerIcon` + `bannerColor` |
+| `clear(slot, signal?)` | empties any slot |
+
+Car and SUV parts (`carBody`, `carSkin`, `carWheels`, `carDriftTrail`, `carBooster`, and the same with `suv…`) go through `equip`. The `carMacaron`, `carZest`, `suvMacaron` and `suvZest` slots need a full template id.
+
+### setVariants
+<Badge type="info" text="method" />
+
+```ts
+setVariants(slot: LockerSlotName, variants: LockerVariantSelection[], signal?: AbortSignal): Promise<LockerLoadout>
+```
+
+Changes styles on the equipped item and keeps it in place. Each `channel` replaces that channel and the other channels are kept.
+
+```ts
+await locker.setVariants('character', [{ channel: 'Progressive', variant: 'Stage3' }]);
+```
+
+### setColor
+<Badge type="info" text="method" />
+
+```ts
+setColor(slot: LockerSlotName, color: string | RichColor, signal?: AbortSignal): Promise<LockerLoadout>
+```
+
+Recolours every RichColor channel on the equipped item, such as a custom umbrella or a car body paint. `color` can be any of these:
+
+- `#RGB`, `#RRGGBB` or `#RRGGBBAA`
+- `{ r, g, b, a }` with values from 0 to 1
+- a raw 32-digit RichColor value
+
+It throws a `ValidationError` when the equipped item has no colour channel.
+
+::: warning Palettes
+Some items only accept certain colours, and the service snaps any other value to its nearest allowed swatch. Read the returned loadout to see what was actually stored.
 :::
 
-Every edit method resolves the account's cosmetic-locker item automatically (the `CosmeticLocker:cosmeticlocker_athena` object), so you pass cosmetic ids, not guids. `itemId` accepts a **bare cosmetic id** (`CID_028_Athena_Commando_F`) — the backend template prefix is added for you — or a full templateId if you already have one. Pass `null` to clear a slot.
+`encodeRichColor(color)` and `decodeRichColor(additionalData)` are exported for working with these values directly. RichColor data is four big-endian float32 values (RGBA).
 
-Every method also accepts a target: `{ lockerItem }` to override the resolved guid, or `{ preset }` to target a saved legacy loadout by index instead of the live one.
-
-### Equipping slots
+### restore
 <Badge type="info" text="method" />
 
 ```ts
-setSlot(category: LockerCategoryValue, itemId: string | null, options?: LockerEquipOptions): Promise<MCPResponse>
-
-equipOutfit(itemId, options?)        // Character
-equipBackpack(itemId, options?)      // Backpack
-equipPickaxe(itemId, options?)       // Pickaxe
-equipGlider(itemId, options?)        // Glider
-equipContrail(itemId, options?)      // SkyDiveContrail
-equipMusicPack(itemId, options?)     // MusicPack
-equipLoadingScreen(itemId, options?) // LoadingScreen
-equipEmote(itemId, slotIndex?, options?)  // Dance — slotIndex 0..5, default 0
-equipWrap(itemId, slotIndex?, options?)   // ItemWrap — slotIndex 0..6, default -1 (all slots)
-clearSlot(category, options?)             // unequip
+restore(loadout: LockerLoadout | { loadouts: Record<string, LockerSchemaLoadout> }, signal?: AbortSignal): Promise<LockerLoadout>
 ```
 
-The typed helpers are thin wrappers over `setSlot`, which sends `SetCosmeticLockerSlot`. `LockerEquipOptions` adds `slotIndex` and `variants`.
+Puts a previously read loadout back exactly as it was. This is handy for "try it on" features:
 
 ```ts
+const before = await locker.loadout();
 await locker.equipOutfit('CID_028_Athena_Commando_F');
-await locker.equipEmote('EID_Floss', 0);
-await locker.equipWrap('Wrap_001_FireHeart');          // every wrap slot
-await locker.clearSlot('Backpack');
+await locker.restore(before);
 ```
 
-### Styles & variants
+## Presets
+
+These are the full-locker presets shown in the game's preset menu (`loadout-group-preset`).
+
+```ts
+savePreset(name: string, options?: { loadouts?: Record<string, LockerSchemaLoadout>; signal?: AbortSignal }): Promise<LockerPreset>
+updatePreset(presetId: string, update: { name?: string; loadouts?: Record<string, LockerSchemaLoadout> | 'current' }, signal?: AbortSignal): Promise<LockerPreset>
+renamePreset(presetId: string, name: string, signal?: AbortSignal): Promise<LockerPreset>
+applyPreset(presetId: string, signal?: AbortSignal): Promise<LockerLoadout>
+deletePreset(presetId: string, signal?: AbortSignal): Promise<void>
+```
+
+- `savePreset` saves the current loadout, or the `loadouts` you pass, as a new preset.
+- `updatePreset` changes a preset's name or contents. Pass `loadouts: 'current'` to overwrite it with what is equipped now.
+- `applyPreset` equips the preset and marks it as the active one.
+- `updatePreset`, `renamePreset` and `applyPreset` accept a preset id or its exact name.
+
+```ts
+const preset = await locker.savePreset('Tryhard');
+await locker.renamePreset(preset.id, 'Sweaty');
+await locker.applyPreset('Sweaty');
+await locker.deletePreset(preset.id);
+```
+
+## Item actions
+
+### setCompanionName
 <Badge type="info" text="method" />
 
 ```ts
-setVariants(category, itemId, variants: LockerVariantUpdate[], options?): Promise<MCPResponse>
+setCompanionName(item: LockerItem | string, name: string, signal?: AbortSignal): Promise<void>
 ```
 
-Re-slots the item with a set of variant channels. A `LockerVariantUpdate` is `{ channel, active, owned? }`; `owned` defaults to `[]`. You can also pass `variants` through any `equip*`/`setSlot` call.
+Renames an owned companion. `item` is a `LockerItem`, a cosmetic id, a template id or the item guid.
 
-```ts
-await locker.setVariants('Character', 'CID_028_Athena_Commando_F', [
-  { channel: 'Material', active: 'Mat2' },
-]);
-```
-
-### Equipping a whole loadout at once
+### lockInItem
 <Badge type="info" text="method" />
 
 ```ts
-equipLoadout(loadout: LockerEquipLoadout, options?): Promise<MCPResponse>
+lockInItem(item: LockerItem | string, variants: Record<string, { variantTag: string; additionalData?: string }>, signal?: AbortSignal): Promise<void>
 ```
 
-Batches every provided slot into a single `SetCosmeticLockerSlots` call. Any key you omit is left untouched; set a key to `null` to clear it. `dances` and `itemWraps` are arrays, slotted by index.
+Permanently locks the styles in on an immutable item, such as a companion's colours. This cannot be undone.
 
-```ts
-await locker.equipLoadout({
-  character: 'CID_028_Athena_Commando_F',
-  backpack: 'BID_004_BlackKnight',
-  pickaxe: 'Pickaxe_Lockjaw',
-  dances: ['EID_Floss', 'EID_Dab', null],
-  itemWraps: ['Wrap_001_FireHeart'],
-});
-```
-
-### Banner & name
+### setFavorite / markSeen
 <Badge type="info" text="method" />
 
 ```ts
-setBanner(iconId: string, colorId: string, options?): Promise<MCPResponse>
-renameLocker(name: string, options?): Promise<MCPResponse>
+setFavorite(itemIds: string[], favorite?: boolean, signal?: AbortSignal): Promise<MCPResponse>
+markSeen(itemIds: string[], signal?: AbortSignal): Promise<MCPResponse>
 ```
 
-`setBanner` takes short banner template names (`brs10level100`, `defaultcolor10`); a `Type:` prefix is stripped for you. `renameLocker` renames the loadout preset.
-
-### Presets (legacy loadout slots)
-<Badge type="info" text="method" />
-
-```ts
-copyPreset(sourceIndex: number, targetIndex: number, newName?: string, signal?): Promise<MCPResponse>
-deletePreset(index: number, options?: { fallbackLoadoutIndex?: number; leaveNullSlot?: boolean }): Promise<MCPResponse>
-```
-
-`copyPreset` saves the loadout at `sourceIndex` into `targetIndex` (`CopyCosmeticLoadout`) — copy from index `0` (the live locker) to save the current fit as a preset. `deletePreset` removes one (`DeleteCosmeticLoadout`); `fallbackLoadoutIndex` defaults to `-1` (none).
-
-```ts
-await locker.copyPreset(0, 3, 'Sweaty Fit');
-await locker.deletePreset(3);
-```
-
-### Preset builder
-<Badge type="info" text="method" />
-
-```ts
-createPreset(): LockerPresetBuilder
-applyPreset(slots: LockerPresetSlot[], options?: ApplyPresetOptions): Promise<MCPResponse>
-```
-
-`createPreset()` returns a fluent `LockerPresetBuilder` for assembling a full fit one cosmetic at a time — each with its own styles (variants) — then applying it in a single `SetCosmeticLockerSlots` write. Build up the slots, then call `.apply()` (or its alias `.save()`).
-
-```ts
-const response = await locker
-  .createPreset()
-  .character('CID_028_Athena_Commando_F', {
-    variants: [{ channel: 'Material', active: 'Mat2' }],
-  })
-  .backpack('BID_004_BlackKnight')
-  .pickaxe('Pickaxe_Lockjaw')
-  .glider('Glider_Warpaint')
-  .emote(0, 'EID_Floss')
-  .emote(1, 'EID_Dab')
-  .wrap(-1, 'Wrap_001_FireHeart')
-  .clear('SkyDiveContrail')
-  .name('Sweaty Fit')
-  .apply();
-```
-
-Per-category shortcuts (`character`, `backpack`, `pickaxe`, `glider`, `contrail`, `musicPack`, `loadingScreen`) target slot `0`; `emote(slotIndex, id)` and `wrap(slotIndex, id)` take an index (`-1` applies a wrap to every slot). `slot(category, itemId, options)` is the general form, `clear(category, slotIndex?)` empties a slot with `null`, and adding the same category+index again replaces the earlier entry. `.name(...)` triggers a follow-up `SetCosmeticLockerName`. Apply into a preset slot instead of the live locker with `.apply({ preset: 3 })`.
-
-Prefer `applyPreset(slots, options)` directly when you already have a `LockerPresetSlot[]` in hand — the builder's `.build()` returns exactly that.
-
-### Modular loadouts (current per-section system)
-<Badge type="info" text="method" />
-
-```ts
-putModularLoadout(loadoutType: ModularLoadoutValue, presetId: number, data: ModularLoadoutInput, signal?): Promise<MCPResponse>
-equipModularPreset(loadoutType: ModularLoadoutValue, presetId: number, signal?): Promise<MCPResponse>
-deleteModularLoadout(loadoutType: ModularLoadoutValue, presetId: number, signal?): Promise<MCPResponse>
-```
-
-The modern locker stores presets per section (`ModularLoadout.character`, `.emotes`, `.wraps`, `.platform`, `.sparks`, `.jam`, `.vehicle`). `putModularLoadout` writes a preset — `data` is `{ slots, displayName? }` where each slot is `{ slotTemplate, equippedItem?, customizations? }` — and the SDK stringifies it into the `loadoutData` field Epic expects. `equipModularPreset` applies a saved preset; `deleteModularLoadout` removes one.
-
-```ts
-import { ModularLoadout } from 'fnapi-js';
-
-await locker.putModularLoadout(ModularLoadout.character, 1, {
-  displayName: 'Preset 1',
-  slots: [
-    { slotTemplate: 'CosmeticLoadoutSlotTemplate:LoadoutSlot_Character', equippedItem: 'AthenaCharacter:CID_028_Athena_Commando_F' },
-    { slotTemplate: 'CosmeticLoadoutSlotTemplate:LoadoutSlot_Pickaxe', equippedItem: 'AthenaPickaxe:Pickaxe_Lockjaw' },
-  ],
-});
-await locker.equipModularPreset(ModularLoadout.character, 1);
-```
-
-### Random & shuffle toggles
-<Badge type="info" text="method" />
-
-```ts
-setRandomLoadout(enabled: boolean, signal?): Promise<MCPResponse>
-setShuffleEnabled(loadoutType: ModularLoadoutValue, enabled: boolean, signal?): Promise<MCPResponse>
-```
-
-`setRandomLoadout` toggles the "random outfit each match" flag; `setShuffleEnabled` toggles shuffle for a modular section.
+These take item guids (`LockerItem.id`). The locker service has no endpoint for them, so they still go through the `athena` MCP profile.
 
 ## Types
 
 ### LockerItem
 
-```ts
-interface LockerItem {
-  id: string;            // profile item guid — use this for mutations
-  templateId: string;    // e.g. AthenaCharacter:cid_028_athena_commando_f
-  type: string;          // AthenaCharacter, AthenaDance, ...
-  cosmeticId: string;    // cid_028_athena_commando_f
-  favorite: boolean;
-  seen: boolean;
-  variants: LockerVariant[];
-  name: string | null;           // filled by enrich (works for tracks too)
-  cosmetic: AnyCosmetic | null;  // filled by enrich
-  imageUrl: string | null;       // filled by enrich
-}
-```
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | `string` | Item guid. |
+| `templateId` | `string` | e.g. `AthenaCharacter:cid_028_athena_commando_f`. |
+| `type` / `cosmeticId` | `string` | The two halves of `templateId`. |
+| `favorite` / `seen` | `boolean` | Favourited, and whether the item has been seen. |
+| `lockedIn` | `boolean \| null` | Lock-in state for immutable items. |
+| `variants` | `LockerVariant[]` | `{ channel, active, activeData, owned }` per style channel. |
+| `createdAt` / `updatedAt` | `string \| null` | ISO timestamps. |
+| `name` / `cosmetic` / `imageUrl` | | Filled in by enrichment. |
 
 ### LockerLoadout
 
-```ts
-interface LockerLoadout {
-  character: LockerSlot | null;
-  backpack: LockerSlot | null;
-  pickaxe: LockerSlot | null;
-  glider: LockerSlot | null;
-  contrail: LockerSlot | null;
-  musicPack: LockerSlot | null;
-  loadingScreen: LockerSlot | null;
-  dances: LockerSlot[];
-  itemWraps: LockerSlot[];
-}
-```
+These named sections hold a `LockerEquippedItem` or `null`:
 
-A `LockerSlot` is `{ type, cosmeticId, cosmetic, imageUrl }`, with `cosmetic`/`imageUrl` populated by enrichment.
+- `character`, `backpack`, `pickaxe`, `glider`, `contrail`, `shoes`, `aura`
+- `emotes` (8 entries), `wraps` (7) and `jamTracks` (8)
+- `banner.icon`, `banner.color`, `lobbyMusic`, `loadingScreen`
+- `instruments.{bass,guitar,drums,keyboard,microphone}`
+- `car` and `suv`, each with `{ body, skin, wheels, driftTrail, booster, macaron, zest }`
+- `companion`, `moments.bus`, `moments.victory`
 
-### LockerCategory / ModularLoadout
+It also has these fields:
 
-`LockerCategory` maps friendly names to the backend categories `setSlot` expects; `ModularLoadout` maps sections to their schema ids.
+| Field | Description |
+| --- | --- |
+| `slots` | Every equipped item keyed by `LockerSlotName`. |
+| `other` | Items in slots this version does not know yet, so new sections still show up. |
+| `shuffle` | Shuffle mode per schema. |
+| `presetId` | The active preset id, if one is equipped. |
+| `group` | The raw active loadout group. |
 
-```ts
-LockerCategory = {
-  character: 'Character', backpack: 'Backpack', pickaxe: 'Pickaxe',
-  glider: 'Glider', contrail: 'SkyDiveContrail', musicPack: 'MusicPack',
-  loadingScreen: 'LoadingScreen', dance: 'Dance', itemWrap: 'ItemWrap',
-};
+`LockerEquippedItem` is `{ slot, schema, slotTemplate, templateId, type, cosmeticId, resolvedTemplateId, variants, name, cosmetic, imageUrl }`. `resolvedTemplateId` is the item the game picked for a "random" slot.
 
-ModularLoadout = {
-  character: 'CosmeticLoadout:LoadoutSchema_Character',
-  emotes: 'CosmeticLoadout:LoadoutSchema_Emotes',
-  wraps: 'CosmeticLoadout:LoadoutSchema_Wraps',
-  platform: 'CosmeticLoadout:LoadoutSchema_Platform',
-  sparks: 'CosmeticLoadout:LoadoutSchema_Sparks',
-  jam: 'CosmeticLoadout:LoadoutSchema_Jam',
-  vehicle: 'CosmeticLoadout:LoadoutSchema_Vehicle',
-};
-```
+### LockerSchema / LOCKER_SLOTS
 
-### Edit inputs
+`LockerSchema` names the ten loadout schemas, such as `LockerSchema.character` (`CosmeticLoadout:LoadoutSchema_Character`). `LOCKER_SLOTS` maps every `LockerSlotName` to its `{ schema, slotTemplate, itemType }`.
 
-```ts
-interface LockerVariantUpdate {
-  channel: string;          // e.g. 'Material'
-  active: string;           // e.g. 'Mat2'
-  owned?: string[];         // defaults to []
-}
+## Raw session calls
 
-interface LockerSlotTarget {
-  lockerItem?: string;      // override the resolved CosmeticLocker guid
-  preset?: number;          // target a saved loadout by index
-  signal?: AbortSignal;
-}
+The locker is built on these `EpicAuthSession` methods, which you can also call directly:
 
-interface LockerEquipOptions extends LockerSlotTarget {
-  slotIndex?: number;
-  variants?: LockerVariantUpdate[];
-}
-
-interface LockerEquipLoadout {
-  character?: string | null;
-  backpack?: string | null;
-  pickaxe?: string | null;
-  glider?: string | null;
-  contrail?: string | null;
-  musicPack?: string | null;
-  loadingScreen?: string | null;
-  dances?: (string | null)[];
-  itemWraps?: (string | null)[];
-}
-
-interface ModularSlotInput {
-  slotTemplate: string;
-  equippedItem?: string | null;
-  customizations?: { channelTag: string; variantTag: string }[];
-}
-
-interface ModularLoadoutInput {
-  slots: ModularSlotInput[];
-  displayName?: string;
-}
-```
+- `lockerItems()`
+- `lockerCosmeticPage({ limit, nextToken })`
+- `lockerCosmetics()`
+- `setActiveLoadoutGroup(group)`
+- `putLoadoutGroupPreset(id, preset)`
+- `updateLoadoutGroupPreset(id, preset)`
+- `deleteLoadoutGroupPreset(id)`
+- `setCompanionName(cosmeticItemId, name)`
+- `lockInImmutableItem(itemIdentifier, variants)`

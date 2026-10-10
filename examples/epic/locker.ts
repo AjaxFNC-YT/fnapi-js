@@ -39,20 +39,21 @@ async function main(): Promise<void> {
   const link = await locker.resolveImage('CID_028_Athena_Commando_F');
   console.log(`\nRenegade Raider image link: ${link}`);
 
+  console.log(`\npresets: ${snapshot.presets.map((preset) => preset.name).join(', ') || 'none'}`);
+
   const edit = process.argv.includes('--edit');
   if (edit) {
     console.log('\nediting the live locker...');
-    await locker.equipLoadout({
-      character: 'CID_028_Athena_Commando_F',
+    await locker.equipMany({
+      character: { item: 'CID_028_Athena_Commando_F', variants: [{ channel: 'Material', variant: 'Mat2' }] },
       pickaxe: 'DefaultPickaxe',
-      dances: ['EID_Floss', null, null, null, null, null],
+      emote0: 'EID_Floss',
     });
     await locker.equipWrap('Wrap_121_JupiterZero');
-    await locker.setVariants('Character', 'CID_028_Athena_Commando_F', [
-      { channel: 'Material', active: 'Mat2' },
-    ]);
-    await locker.copyPreset(0, 3, 'Saved from fnapi');
-    console.log('equipped skin + emote, wrapped every weapon, saved preset 3');
+    const preset = await locker.savePreset('Saved from fnapi');
+    console.log(`equipped skin + emote, wrapped every weapon, saved preset ${preset.id}`);
+    await locker.restore(snapshot.loadout);
+    console.log('restored the original loadout');
   } else {
     console.log('\npass --edit to equip a loadout, wrap, style and save a preset');
   }

@@ -1,4 +1,4 @@
-import type { CacheOptions, FetchLike, QueryParams, RetryOptions } from '../core/types.js';
+import type { CacheOptions, FetchLike, QueryParams, RequestCacheOptions, RetryOptions } from '../core/types.js';
 
 export interface FnccAPIOptions {
   baseUrl?: string;
@@ -14,11 +14,25 @@ export interface FnccAPIOptions {
 export interface FnccBaseOptions {
   signal?: AbortSignal;
   timeout?: number;
-  cache?: boolean;
+  cache?: boolean | RequestCacheOptions;
   headers?: Record<string, string>;
 }
 
+export type FnccMatchMethod = 'contains' | 'full' | 'starts' | 'ends';
+
+export type FnccLookupPlatform = 'epic' | 'psn' | 'xbl' | 'steam' | 'nsw';
+
+export type FnccImageFormat = 'png' | 'jpeg' | 'webp' | 'tga';
+
 export interface FnccAssetsListOptions extends FnccBaseOptions {
+  prefix?: string;
+  extension?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export interface FnccAssetPathsOptions extends FnccBaseOptions {
+  q?: string;
   prefix?: string;
   extension?: string;
   offset?: number;
@@ -45,6 +59,7 @@ export interface FnccSpritesOptions extends FnccBaseOptions {
 }
 
 export interface FnccCosmeticSearchOptions extends FnccBaseOptions {
+  search?: string;
   name?: string;
   description?: string;
   id?: string;
@@ -55,7 +70,7 @@ export interface FnccCosmeticSearchOptions extends FnccBaseOptions {
   series?: string;
   set?: string;
   introduction?: string;
-  matchMethod?: string;
+  matchMethod?: FnccMatchMethod;
   limit?: number;
   offset?: number;
 }
@@ -63,7 +78,7 @@ export interface FnccCosmeticSearchOptions extends FnccBaseOptions {
 export interface FnccImageOptions extends FnccBaseOptions {
   path: string;
   name?: string;
-  format?: string;
+  format?: FnccImageFormat;
   maxSize?: number;
 }
 
@@ -117,14 +132,65 @@ export interface FnccItemShopOptions extends FnccBaseOptions {
 export interface FnccLookupOptions extends FnccBaseOptions {
   accountId?: string;
   name?: string;
-  platform?: string;
-  search?: string;
+  platform?: FnccLookupPlatform;
+  search?: boolean;
 }
 
 export interface FnccMnemonicListOptions extends FnccBaseOptions {
   type?: string;
 }
 
-export interface FnccMnemonicOptions extends FnccBaseOptions {
-  related?: boolean;
+export type FnccMnemonicOptions = FnccBaseOptions;
+
+export interface FnccLootSearchOptions extends FnccBaseOptions {
+  q?: string;
+  item?: string;
+  container?: string;
+  experience?: string;
+  map?: string;
+  rarity?: string;
+  zeroBuild?: boolean;
+  ranked?: boolean;
+  minChance?: number;
+  limit?: number;
+  offset?: number;
+}
+
+export interface FnccBundlesOptions extends FnccBaseOptions {
+  q?: string;
+  item?: string;
+  seen?: boolean;
+  inShop?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export type FnccQuestMode =
+  | 'battle-royale'
+  | 'reload'
+  | 'lego'
+  | 'festival'
+  | 'rocket-racing'
+  | 'og'
+  | 'fall-guys'
+  | 'ballistic'
+  | 'arenas'
+  | 'save-the-world';
+
+export type FnccQuestSection = 'quests' | 'bundles' | 'categories' | 'stwQuests' | 'stwCategories';
+
+export interface FnccQuestTextOptions extends FnccBaseOptions {
+  lang?: string;
+  rewards?: boolean;
+}
+
+export interface FnccQuestFilterOptions extends FnccQuestTextOptions {
+  includeDisabled?: boolean;
+  excludeHidden?: boolean;
+  mode?: FnccQuestMode | FnccQuestMode[];
+}
+
+export interface FnccQuestCatalogOptions extends FnccQuestFilterOptions {
+  sections?: FnccQuestSection[];
+  ids?: string[];
 }

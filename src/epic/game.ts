@@ -104,11 +104,64 @@ function requireString(value: unknown, parameter: string): string {
   return value;
 }
 
+export interface FortniteVersion {
+  app: string;
+  serverDate: string;
+  overridePropertiesVersion: string;
+  cln: string;
+  build: string;
+  moduleName: string;
+  buildDate: string;
+  version: string;
+  branch: string;
+  modules: Record<string, unknown>;
+}
+
+export interface GiftEligibilityResponse {
+  price?: {
+    currencyType?: string;
+    currencySubType?: string;
+    regularPrice?: number;
+    dynamicRegularPrice?: number;
+    finalPrice?: number;
+    basePrice?: number;
+    saleExpiration?: string;
+  };
+  items?: Array<{ templateId?: string; quantity?: number }>;
+  ownership?: unknown[];
+}
+
 export class FortniteGameManager {
   constructor(
     private readonly rest: EpicRestClient,
     private readonly mcp: MCPClient,
   ) {}
+
+  async giftEligibility(
+    accessToken: string,
+    recipientId: string,
+    offerId: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<GiftEligibilityResponse> {
+    requireString(accessToken, 'accessToken');
+    requireString(recipientId, 'recipientId');
+    requireString(offerId, 'offerId');
+    const path =
+      `/fortnite/api/storefront/v2/gift/check_eligibility/recipient/${encodeURIComponent(recipientId)}` +
+      `/offer/${encodeURIComponent(offerId)}`;
+    const response = await this.rest.request<GiftEligibilityResponse>('GET', path, {
+      bearer: accessToken,
+      ...(options?.signal ? { signal: options.signal } : {}),
+    });
+    return response.data;
+  }
+
+  async version(options?: { signal?: AbortSignal }): Promise<FortniteVersion> {
+    const response = await this.rest.request<FortniteVersion>('GET', '/fortnite/api/version', {
+      ...(options?.signal ? { signal: options.signal } : {}),
+    });
+    return response.data;
+  }
 
   async timeline(accessToken: string, options?: { signal?: AbortSignal }): Promise<Timeline> {
     requireString(accessToken, 'accessToken');

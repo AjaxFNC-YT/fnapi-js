@@ -4,13 +4,14 @@ import {
   CONNECT_SEC_PROTOCOLS,
   CONNECT_WEBSOCKET_URL,
   decodeEosProps,
+  loadConnectWebSocket,
   normalizeConnectPresence,
   type ConnectClientOptions,
   type ConnectFriendMessage,
   type ConnectPartyMessage,
   type ConnectPresenceUpdate,
 } from '../../src/epic/connect.js';
-import { ConfigurationError, ValidationError } from '../../src/core/errors.js';
+import { ValidationError } from '../../src/core/errors.js';
 import { createMockConnectWebSocket, type MockWebSocket } from '../helpers/mockWebSocket.js';
 
 const NUL = String.fromCharCode(0);
@@ -70,16 +71,16 @@ describe('ConnectClient', () => {
     ).toThrow(ValidationError);
   });
 
-  it('rejects construction without a header-capable webSocket factory', () => {
-    expect(
-      () => new ConnectClient({ accountId: 'me', getAccessToken: () => 'token' }),
-    ).toThrow(ConfigurationError);
+  it('constructs without a webSocket factory and resolves the ws package lazily', async () => {
+    expect(() => new ConnectClient({ accountId: 'me', getAccessToken: () => 'token' })).not.toThrow();
+    const factory = await loadConnectWebSocket();
+    expect(typeof factory).toBe('function');
   });
 
   it('opens the socket with the STOMP subprotocol header and Authorization header', async () => {
     const { client, socket } = await connectClient();
     expect(socket.url).toBe(CONNECT_WEBSOCKET_URL);
-    expect(socket.protocols).toEqual(CONNECT_SEC_PROTOCOLS.split(','));
+    expect(socket.protocols).toBeUndefined();
     expect(socket.headers['Sec-WebSocket-Protocol']).toBe(CONNECT_SEC_PROTOCOLS);
     expect(socket.headers['Authorization']).toBe('Bearer access-token');
     expect(socket.headers['Epic-Connect-Protocol']).toBe('stomp');
@@ -283,6 +284,156 @@ describe('ConnectClient', () => {
     await promise;
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(socket.sent.some((frame) => frame === '\n')).toBe(true);
+    await client.disconnect();
+  });
+
+  it('reconnects with backoff after an unexpected close and re-runs onConnected', async () => {
+    const announced: string[] = [];
+    const { client, socket, sockets } = await connectClient({
+      autoReconnect: true,
+      reconnectInitialDelayMs: 5,
+      onConnected: (connectionId) => {
+        announced.push(connectionId);
+      },
+    });
+    const attempts: number[] = [];
+    client.on('reconnecting', (payload) => attempts.push(payload.attempt));
+    socket.serverClose(1006, '');
+    expect(attempts).toEqual([1]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(sockets.length).toBe(2);
+    const next = sockets[1]!;
+    next.open();
+    await tick();
+    next.serverSend(connectedFrame());
+    await tick();
+    next.serverSend(messageFrame({ type: 'core.connect.v1.connected', connectionId: 'conn-2' }));
+    await tick();
+    expect(client.connected).toBe(true);
+    expect(client.connection).toBe('conn-2');
+    expect(announced).toEqual(['conn-1', 'conn-2']);
+    await client.disconnect();
+  });
+
+  it('keeps retrying when a reconnect attempt fails', async () => {
+    const { client, socket, sockets } = await connectClient({
+      autoReconnect: true,
+      reconnectInitialDelayMs: 5,
+    });
+    const attempts: number[] = [];
+    client.on('reconnecting', (payload) => attempts.push(payload.attempt));
+    client.on('error', () => undefined);
+    socket.serverClose(1006, '');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    sockets[1]!.serverClose(1006, '');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(attempts).toEqual([1, 2]);
+    expect(sockets.length).toBe(3);
+    await client.disconnect();
+  });
+
+  it('does not reconnect after a manual disconnect', async () => {
+    const { client, sockets } = await connectClient({ autoReconnect: true, reconnectInitialDelayMs: 5 });
+    const attempts: number[] = [];
+    client.on('reconnecting', (payload) => attempts.push(payload.attempt));
+    await client.disconnect();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(attempts).toEqual([]);
+    expect(sockets.length).toBe(1);
+  });
+
+  it('ignores frames and closes from a replaced socket', async () => {
+    const { client, socket, sockets } = await connectClient({ autoReconnect: true });
+    socket.serverSend(errorFrame({ statusCode: 4019 }));
+    await tick();
+    const closes: number[] = [];
+    client.on('disconnected', (payload) => closes.push(payload.code));
+    socket.serverSend(messageFrame({ type: 'core.connect.v1.connected', connectionId: 'stale' }));
+    expect(client.connection).toBeNull();
+    const next = sockets[1]!;
+    next.open();
+    await tick();
+    next.serverSend(connectedFrame());
+    await tick();
+    next.serverSend(messageFrame({ type: 'core.connect.v1.connected', connectionId: 'conn-2' }));
+    await tick();
+    expect(client.connection).toBe('conn-2');
+    expect(closes).toEqual([]);
+    await client.disconnect();
+  });
+
+  it('shares a single in-flight connect between concurrent callers', async () => {
+    const { factory, sockets } = createMockConnectWebSocket();
+    const client = new ConnectClient({
+      accountId: 'me',
+      getAccessToken: async () => 'access-token',
+      webSocket: factory,
+      autoReconnect: false,
+    });
+    const first = client.connect();
+    const second = client.connect();
+    await tick();
+    expect(sockets.length).toBe(1);
+    const socket = sockets[0]!;
+    socket.open();
+    await tick();
+    socket.serverSend(connectedFrame());
+    await tick();
+    socket.serverSend(messageFrame({ type: 'core.connect.v1.connected', connectionId: 'conn-1' }));
+    await Promise.all([first, second]);
+    await client.disconnect();
+  });
+
+  it('ignores an open event that arrives after the connect timed out', async () => {
+    const { factory, sockets } = createMockConnectWebSocket();
+    const client = new ConnectClient({
+      accountId: 'me',
+      getAccessToken: () => 'access-token',
+      webSocket: factory,
+      autoReconnect: false,
+      connectionTimeoutMs: 10,
+    });
+    const errors: Error[] = [];
+    client.on('error', (error) => errors.push(error));
+    await expect(client.connect()).rejects.toThrow('Timed out');
+    expect(() => sockets[0]!.open()).not.toThrow();
+    expect(sockets[0]!.sent).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  it('turns a throwing send during the handshake into a rejected connect', async () => {
+    const { factory, sockets } = createMockConnectWebSocket();
+    const client = new ConnectClient({
+      accountId: 'me',
+      getAccessToken: () => 'access-token',
+      webSocket: factory,
+      autoReconnect: false,
+    });
+    const promise = client.connect();
+    await tick();
+    const socket = sockets[0]!;
+    socket.send = () => {
+      throw new Error('WebSocket is not open: readyState 2 (CLOSING)');
+    };
+    expect(() => socket.open()).not.toThrow();
+    await expect(promise).rejects.toThrow('readyState 2');
+    expect(client.state).toBe('closed');
+  });
+
+  it('reconnect() opens a fresh session immediately', async () => {
+    const { client, socket, sockets } = await connectClient({ autoReconnect: true });
+    const reconnecting = client.reconnect();
+    await tick();
+    expect(sockets.length).toBe(2);
+    socket.serverClose(1006, '');
+    const next = sockets[1]!;
+    next.open();
+    await tick();
+    next.serverSend(connectedFrame());
+    await tick();
+    next.serverSend(messageFrame({ type: 'core.connect.v1.connected', connectionId: 'conn-2' }));
+    await reconnecting;
+    expect(client.connection).toBe('conn-2');
     await client.disconnect();
   });
 

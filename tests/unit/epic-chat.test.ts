@@ -102,6 +102,11 @@ describe('buildPresencePayload', () => {
   it('maps onlineType onto the status field', () => {
     expect(buildPresencePayload({ onlineType: 'away' })['status']).toBe('away');
   });
+
+  it('sends an empty activity to clear a status', () => {
+    expect(buildPresencePayload({ activity: null })['activity']).toEqual({});
+    expect('activity' in buildPresencePayload()).toBe(false);
+  });
 });
 
 describe('ChatService', () => {

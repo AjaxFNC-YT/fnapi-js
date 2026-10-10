@@ -16,7 +16,7 @@ export default defineConfig({
       { text: 'Examples', link: '/guide/examples' },
       { text: 'Reference', link: '/fortnite/fortnite-api' },
       {
-        text: 'v2.0.6-beta.0',
+        text: 'v2.0.7-beta.0',
         items: [
           { text: 'npm', link: 'https://www.npmjs.com/package/fnapi-js' },
           { text: 'Releases', link: 'https://github.com/AjaxFNC-YT/fnapi-js/releases' },
@@ -68,6 +68,8 @@ export default defineConfig({
         { text: "Party", link: '/epic/party' },
         { text: "FriendsManager", link: '/epic/friends' },
         { text: "Habanero (Ranked)", link: '/epic/habanero' },
+        { text: "Tournaments", link: '/epic/tournaments' },
+        { text: "Quests", link: '/epic/quests' },
         { text: "PresenceManager", link: '/epic/presence' },
         { text: "XMPP / Presence (realtime)", link: '/epic/xmpp' },
         { text: "Chat & Live Events", link: '/epic/chat' },
@@ -78,6 +80,10 @@ export default defineConfig({
         { text: "StatsProxyManager", link: '/epic/stats' },
         { text: "FortniteGameManager", link: '/epic/game' },
         { text: "LibraryManager", link: '/epic/library' },
+        { text: "Content Pages & MOTDs", link: '/epic/content' },
+        { text: "Islands (Content Service)", link: '/epic/content-service' },
+        { text: "Islands & Links", link: '/epic/links' },
+        { text: "Launcher & Build Info", link: '/epic/launcher' },
         { text: "EcosystemEndpoint", link: '/epic/ecosystem' },
         { text: "Epic Errors", link: '/epic/errors' }
         ],

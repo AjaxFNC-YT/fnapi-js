@@ -132,6 +132,8 @@ function requireString(value: unknown, parameter: string): string {
   return value;
 }
 
+const READ_ONLY_OPERATIONS = new Set<string>(['QueryProfile', 'QueryPublicProfile']);
+
 export class MCPClient {
   private readonly allowCustomOperations: boolean;
 
@@ -170,6 +172,7 @@ export class MCPClient {
 
     const response = await this.rest.request<MCPResponse<T>>('POST', path, {
       bearer: accessToken,
+      idempotent: READ_ONLY_OPERATIONS.has(operation),
       query,
       json: options.payload ?? {},
       ...(options.signal ? { signal: options.signal } : {}),

@@ -10,7 +10,7 @@ import type {
   StatsImage,
   TimeWindow,
 } from './enums.js';
-import type { CacheOptions, FetchLike, QueryParams, RetryOptions } from '../core/types.js';
+import type { CacheOptions, FetchLike, QueryParams, RequestCacheOptions, RetryOptions } from '../core/types.js';
 
 export interface FortniteAPIOptions {
   apiKey?: string;
@@ -29,7 +29,7 @@ export interface FortniteAPIOptions {
 export interface BaseOptions {
   signal?: AbortSignal;
   timeout?: number;
-  cache?: boolean;
+  cache?: boolean | RequestCacheOptions;
   headers?: Record<string, string>;
 }
 

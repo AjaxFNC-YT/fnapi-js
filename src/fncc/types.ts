@@ -11,16 +11,51 @@ export interface FnccColor {
   hex: string;
 }
 
+export interface FnccRarityGradient {
+  radius: number;
+  falloff: number;
+  brightness: number;
+  roughness: number;
+  glow: number;
+}
+
 export interface FnccRarity {
   value: string;
   displayValue: string;
   backendValue: string;
+  colors: string[];
+  hexColors: string[];
+  gradient: FnccRarityGradient;
+  image: string;
+  generated: boolean;
+  card: string | null;
+  cardAnimated: boolean;
+}
+
+export interface FnccRarityColors {
+  value: string;
+  displayValue: string;
+  backendValue: string;
+  colors: string[];
+  hexColors: string[];
+  gradient: FnccRarityGradient;
+}
+
+export interface FnccRarityTier extends Omit<FnccRarity, 'generated'> {
+  cosmetics: number;
+  weapons: number;
 }
 
 export interface FnccTypeInfo {
   value: string;
   displayValue: string;
   backendValue: string;
+  image: string;
+}
+
+export interface FnccCosmeticType extends FnccTypeInfo {
+  category: string;
+  count: number;
 }
 
 export interface FnccSet {
@@ -31,9 +66,13 @@ export interface FnccSet {
 
 export interface FnccSeries {
   value: string;
-  image: string | null;
-  colors: string[];
   backendValue: string;
+  colors: string[];
+  hexColors: string[];
+  image: string | null;
+  generated: boolean;
+  card: string | null;
+  cardAnimated: boolean;
 }
 
 export interface FnccIntroduction {
@@ -44,26 +83,40 @@ export interface FnccIntroduction {
 }
 
 export interface FnccImages {
-  smallIcon?: string;
+  smallIcon?: string | null;
   icon?: string;
-  wide?: string;
+  wide?: string | null;
   largeIcon?: string;
+  render?: string;
+  albumArt?: string;
+  placeholder?: boolean;
+}
+
+export interface FnccMedia {
+  video: Record<string, string> | null;
+  audio: string | null;
+  audioDuration: string | null;
+  source: string;
 }
 
 export interface FnccVariantOption {
   tag: string;
   name: string;
-  image: string;
+  image: string | null;
 }
 
 export interface FnccVariant {
   channel: string;
+  name: string | null;
   type: string;
   options: FnccVariantOption[];
 }
 
 export interface FnccVersion {
   gameVersion: string;
+  cleanBuild: string;
+  changelist: number;
+  branch: string;
   datasetBuild: string;
   publishedAt: string;
   complete: boolean;
@@ -80,14 +133,12 @@ export interface FnccAes {
   version: string;
   mainKey: string;
   dynamicKeys: FnccDynamicKey[];
-  source: string;
   fetchedAt: string;
 }
 
 export interface FnccMappings {
   version: string;
   fileName: string;
-  localPath: string;
   fetchedAt: string;
 }
 
@@ -110,10 +161,11 @@ export interface FnccStatusGame {
   installedVersion: string;
   availableVersion: string;
   upToDate: boolean;
-  progress: number;
+  progress: number | null;
   lastCheckAt: string | null;
   lastError: string | null;
   checkIntervalMs: number;
+  cleanBuild: string;
 }
 
 export interface FnccStatusParser {
@@ -128,11 +180,27 @@ export interface FnccStatusParser {
   lastError: string | null;
 }
 
+export interface FnccMaintenanceComponentSummary {
+  knownGood: string | null;
+  lastResult: string | null;
+  lastCheckAt: string | null;
+  quarantined: number;
+  promotions: number;
+  rollbacks: number;
+  lastError: string | null;
+}
+
+export interface FnccMaintenanceSummary {
+  status: string;
+  cue4parse: FnccMaintenanceComponentSummary;
+  legendary: FnccMaintenanceComponentSummary;
+}
+
 export interface FnccMaintenanceComponent {
   knownGood: string | null;
   current: string | null;
   candidate: string | null;
-  failed: string | null;
+  failed: string[];
   lastCheckAt: string | null;
   lastAttemptAt: string | null;
   lastPromotedAt: string | null;
@@ -157,7 +225,7 @@ export interface FnccStatus {
   dataset: FnccStatusDataset;
   game: FnccStatusGame;
   parser: FnccStatusParser;
-  maintenance: FnccMaintenance;
+  maintenance: FnccMaintenanceSummary;
 }
 
 export interface FnccDownloadRemote {
@@ -179,7 +247,7 @@ export interface FnccDownload {
   totalUpdates: number;
   remote: FnccDownloadRemote | null;
   updatedAt: string;
-  progress: number;
+  progress: number | null;
 }
 
 export interface FnccParser {
@@ -203,7 +271,7 @@ export interface FnccBannerColor {
   color: string;
   category: string;
   categoryName: string;
-  subCategoryGroup: string;
+  subCategoryGroup: number;
   primaryColor: FnccColor;
   secondaryColor: FnccColor;
 }
@@ -241,23 +309,69 @@ export interface FnccCosmetic {
   searchTags: string[];
   metaTags: string[];
   builtInEmoteIds: string[];
-  gender: string;
-  cosmeticId: string;
+  gender: string | null;
+  cosmeticId: string | null;
   vehicleId: string | null;
   dynamicPakId: string | null;
   showcaseVideo: string | null;
   itemPreviewHeroPath: string | null;
   path: string;
+  media?: FnccMedia | null;
 }
 
-export type FnccCosmeticsByCategory = Record<string, FnccCosmetic[]>;
+export interface FnccTrackDifficulty {
+  vocals: number;
+  guitar: number;
+  bass: number;
+  plasticBass: number;
+  drums: number;
+  plasticDrums: number;
+}
+
+export interface FnccTrack {
+  id: string;
+  devName: string;
+  title: string;
+  artist: string;
+  album: string | null;
+  releaseYear: number;
+  bpm: number;
+  duration: number;
+  difficulty: FnccTrackDifficulty;
+  genres: string[];
+  albumArt: string;
+  images?: FnccImages;
+  media?: FnccMedia | null;
+}
+
+export interface FnccBean {
+  id: string;
+  cosmeticId: string;
+  name: string;
+  description: string;
+  gender: string | null;
+  images: FnccImages;
+  gameplayTags: string[];
+  path: string;
+}
+
+export type FnccCatalogItem = FnccCosmetic | FnccTrack | FnccBean;
+
+export type FnccCosmeticsByCategory = Record<string, FnccCatalogItem[]>;
 
 export type FnccCosmeticCategories = Record<string, number>;
 
-export interface FnccCosmeticSearchResponse {
+export interface FnccCosmeticSearchResponse<T = FnccCosmetic> {
   status: number;
   total: number;
-  data: FnccCosmetic[];
+  data: T[];
+}
+
+export interface FnccCosmeticSearchAllResponse {
+  status: number;
+  total: number;
+  count: number;
+  data: Array<FnccCatalogItem & { category: string }>;
 }
 
 export interface FnccSpritePerkLevel {
@@ -272,9 +386,48 @@ export interface FnccSpritePerkScaling {
 
 export interface FnccSpritePerk {
   id: string;
-  name: string;
-  description: string;
+  name: string | null;
+  description: string | null;
   scaling: FnccSpritePerkScaling[];
+}
+
+export interface FnccSpriteSpawn {
+  variantWeight: number | null;
+  weightTable: string | null;
+  weightRow: string | null;
+  eventTable: string | null;
+  eventRow: string | null;
+  eventWeight: number | null;
+  eventEnabled: boolean | null;
+  randomActivationChance: number | null;
+  maxCount: number | null;
+  maxSpawnedCount: number | null;
+  minRespawnTime: number | null;
+  maxRespawnTime: number | null;
+  onlyInSafeZone: boolean | null;
+  calendarGated: boolean;
+}
+
+export interface FnccSpriteVariantSpawn extends FnccSpriteSpawn {
+  shippedVariantWeight: number;
+}
+
+export interface FnccSpriteGrant {
+  reward: string;
+  plugin: string;
+  quest: string | null;
+  requires: string | null;
+}
+
+export interface FnccSpriteAcquisition {
+  spawnable: boolean;
+  granted: boolean;
+  methods: string[];
+  grants: FnccSpriteGrant[];
+}
+
+export interface FnccSpriteVariantAcquisition extends FnccSpriteAcquisition {
+  override: boolean;
 }
 
 export interface FnccSpriteVariant {
@@ -283,41 +436,56 @@ export interface FnccSpriteVariant {
   name: string;
   description: string;
   variant: string;
-  rarity: FnccRarity | null;
+  rarity: FnccRarityColors | null;
   summonCost: number;
   isStarter: boolean;
-  released: boolean;
+  library: string;
+  season: string;
+  released: string;
+  currentSeason: boolean;
   images: FnccImages;
+  contextTags: string[];
+  perks: FnccSpritePerk[];
+  extractionCurve: string | null;
+  extractionPoints: FnccSpritePerkLevel[];
+  enabled: boolean;
+  registered: boolean;
+  spawn: FnccSpriteVariantSpawn | null;
+  acquisition: FnccSpriteVariantAcquisition;
+  path: string;
 }
 
 export interface FnccSprite {
   id: string;
   mappingId: string;
   library: string;
-  season: number;
+  season: string;
   name: string;
   description: string;
   rarity: FnccRarity | null;
   summonCost: number;
   isStarter: boolean;
-  released: boolean;
+  released: string;
   currentSeason: boolean;
-  dexNumber: number;
+  dexNumber: number | null;
   species: string;
-  acquisitionHint: string;
+  acquisitionHint: string | null;
   images: FnccImages;
   gameplayTags: string[];
   contextTags: string[];
   perks: FnccSpritePerk[];
   variants: FnccSpriteVariant[];
-  enabled?: boolean;
+  enabled: boolean;
+  registered: boolean;
+  spawn: FnccSpriteSpawn | null;
+  acquisition: FnccSpriteAcquisition;
   path: string;
 }
 
 export interface FnccSpritesResponse {
   status: number;
   hotfixAppliedAt: string | null;
-  hotfixRules: unknown[];
+  hotfixRules: number;
   count: number;
   data: FnccSprite[];
 }
@@ -331,63 +499,92 @@ export interface FnccPage<T> {
 
 export interface FnccAssetEntry {
   path: string;
-  size?: number;
-  extension?: string;
+  extension: string;
+  size: number;
+  archiveName: string;
 }
 
-export interface FnccAssetExport {
+export type FnccSearchHit = FnccAssetEntry;
+
+export type FnccAssetPackage = Record<string, string>;
+
+export interface FnccAssetExportRef {
   name: string;
-  type?: string;
+  class: string;
 }
 
-export type FnccAssetPackage = Record<string, string | null>;
+export interface FnccFixedPath {
+  input: string;
+  found: boolean;
+  file: string | null;
+  package: string | null;
+  objectPath: string | null;
+  objectName: string | null;
+  class: string | null;
+  archive: string | null;
+  size: number | null;
+  exports: FnccAssetExportRef[];
+  error: string | null;
+}
 
 export interface FnccArchive {
   name: string;
-  mounted?: boolean;
+  path: string;
+  encrypted: boolean;
+  encryptionKeyGuid: string;
+  fileCount: number;
+  size: number;
+  mounted: boolean;
 }
 
-export interface FnccSearchHit {
-  path: string;
-  size?: number;
-  extension?: string;
+export interface FnccContentMatchContext {
+  text: string;
+  offset: number;
+  encoding: string;
 }
 
-export interface FnccContentMatch {
-  path: string;
-  matches: unknown[];
+export interface FnccContentMatch extends FnccAssetEntry {
+  matchCount: number;
+  matches: FnccContentMatchContext[];
 }
 
 export interface FnccContentSearchResult {
-  total: number;
-  files: number;
+  term: string;
+  candidates: number;
+  scanned: number;
+  skipped: number;
+  hits: number;
+  truncated: boolean;
+  truncationReason: string | null;
+  elapsedMs: number;
   items: FnccContentMatch[];
 }
 
 export interface FnccAntiCheatFileRef {
   name: string;
-  size?: number;
-  hash?: string;
-  [key: string]: unknown;
+  size: number;
+  sha256: string;
+  modified: string;
+  version: string | null;
+  productVersion: string | null;
+  url: string | null;
 }
 
 export interface FnccAntiCheat {
   installed: boolean;
-  splash: Record<string, unknown> | null;
+  splash: FnccAntiCheatFileRef | null;
   version: string;
   productVersion: string;
   runtimeVersion: string;
   gameVersion: string;
-  product: Record<string, unknown> | null;
+  product: Record<string, string> | null;
   locales: string[];
-  licenses: unknown[];
-  certificates: unknown[];
-  licenseFiles: unknown[];
+  licenses: string[];
+  certificates: FnccAntiCheatFileRef[];
+  licenseFiles: FnccAntiCheatFileRef[];
   files: FnccAntiCheatFileRef[];
   checkedAt: string;
 }
-
-export type FnccAntiCheatFileContent = Record<string, unknown>;
 
 export interface FnccCloudStorageFile {
   filename: string;
@@ -403,10 +600,24 @@ export interface FnccCloudStorageFile {
   cachedAt: string;
 }
 
+export interface FnccDiscoveryResult {
+  linkCode: string;
+  isVisible: boolean;
+  lockStatus: string;
+  lockStatusReason: string;
+  globalCcu: number | null;
+  likePercent: number | null;
+}
+
 export interface FnccDiscoveryPanel {
-  panelName?: string;
-  results?: unknown[];
-  [key: string]: unknown;
+  name: string;
+  displayName: string;
+  subtitle: string | null;
+  type: string;
+  featureTags: string[];
+  hasMore: boolean;
+  resultCount: number;
+  results: FnccDiscoveryResult[];
 }
 
 export interface FnccDiscoverySurface {
@@ -430,23 +641,94 @@ export interface FnccDiscoveryResponse {
 
 export interface FnccFish {
   id: string;
-  itemId: string;
+  itemId?: string;
   name: string;
-  description: string;
+  description: string | null;
   details: string | null;
   enabled: boolean;
   needsProFishingRod: boolean;
   sizeMin: number | null;
   sizeMax: number | null;
   heal: number | null;
-  rarity: FnccRarity | null;
+  rarity: string | null;
   maxStackSize: number | null;
   tags: string[];
-  image: string;
-  smallImage: string;
+  image: string | null;
+  smallImage: string | null;
   timeOfDay: string[];
   location: string[];
-  path: string;
+  source: string;
+  path: string | null;
+}
+
+export interface FnccShopPrice {
+  currency: string;
+  regularPrice: number | null;
+  finalPrice: number;
+  discount: number | null;
+  saleType: string | null;
+  saleExpiration: string | null;
+  dynamic: boolean;
+  floorPrice?: number;
+}
+
+export interface FnccShopColors {
+  color1: string;
+  color2: string;
+  color3: string | null;
+  textBackground: string;
+}
+
+export interface FnccShopBackground {
+  type: string;
+  texture: string;
+}
+
+export interface FnccShopLayout {
+  id: string;
+  name: string;
+  index: number;
+  rank: number;
+  category: string | null;
+  subtitle: string | null;
+  showIneligibleOffers: string;
+  useWidePreview: boolean | null;
+  displayType: string | null;
+  background: FnccShopBackground;
+  offerGroupId: string;
+}
+
+export interface FnccShopItem {
+  templateId: string;
+  type: string;
+  id: string;
+  quantity: number;
+  category: string | null;
+  name: string | null;
+  description: string | null;
+  rarity: FnccRarity | null;
+  series: FnccSeries | null;
+  cosmeticType: FnccTypeInfo | null;
+  images: FnccImages | null;
+}
+
+export interface FnccShopBundleItem {
+  templateId: string;
+  quantity: number;
+  regularPrice: number;
+  discountedPrice: number;
+  alreadyOwnedPriceReduction: number;
+}
+
+export interface FnccShopBundle {
+  name: string;
+  description: string | null;
+  asset: string;
+}
+
+export interface FnccShopImages {
+  source: string;
+  store: string[];
 }
 
 export interface FnccShopOffer {
@@ -463,8 +745,8 @@ export interface FnccShopOffer {
   violatorTag: string | null;
   violatorIntensity: string | null;
   bundleId: string | null;
-  bundleItems: unknown[];
-  relatedOffers: Record<string, unknown> | null;
+  bundleItems: FnccShopBundleItem[];
+  relatedOffers: string | null;
   mainType: string | null;
   inDate: string;
   outDate: string;
@@ -473,20 +755,26 @@ export interface FnccShopOffer {
   dailyLimit: number;
   weeklyLimit: number;
   monthlyLimit: number;
-  price: Record<string, unknown>;
-  colors: Record<string, unknown> | null;
+  price: FnccShopPrice;
+  colors: FnccShopColors;
   displayAsset: string;
-  tileBackgroundMaterial: string;
+  displayAssetPath: string | null;
+  tileBackgroundMaterial: string | null;
   primaryTemplateId: string | null;
-  items: unknown[];
+  items: FnccShopItem[];
   storefront: string;
-  section: Record<string, unknown> | null;
+  section: { id: string; name: string };
+  images: FnccShopImages | null;
+  layout: FnccShopLayout;
+  bundle: FnccShopBundle | null;
+  media: FnccMedia | null;
 }
 
 export interface FnccItemShop {
   status: number;
   fetchedAt: string;
   resetsAt: string;
+  catalogExpiresAt: string;
   refreshIntervalHrs: number;
   hash: string;
   offerCount: number;
@@ -495,10 +783,30 @@ export interface FnccItemShop {
   data: FnccShopOffer[];
 }
 
+export interface FnccShopStackRank {
+  context: string;
+  productTag: string;
+  rank: number;
+  startDate: string;
+}
+
+export interface FnccShopOfferGroup {
+  id: string;
+  displayType: string;
+  widePreview: boolean;
+  stackRanks: FnccShopStackRank[];
+}
+
 export interface FnccItemShopSection {
   id: string;
   name: string;
-  offerGroups: unknown[];
+  index: number;
+  category: string | null;
+  subtitle: string | null;
+  showIneligibleOffers: string;
+  background: FnccShopBackground;
+  stackRanks: FnccShopStackRank[];
+  offerGroups: FnccShopOfferGroup[];
   offerCount: number;
 }
 
@@ -506,9 +814,16 @@ export interface FnccItemShopSections {
   status: number;
   fetchedAt: string;
   resetsAt: string;
+  catalogExpiresAt: string;
   layoutLastModified: string;
   sectionCount: number;
   data: FnccItemShopSection[];
+}
+
+export interface FnccLightswitchLauncher {
+  appName: string;
+  catalogItemId: string;
+  namespace: string;
 }
 
 export interface FnccLightswitchService {
@@ -520,7 +835,7 @@ export interface FnccLightswitchService {
   allowedActions: string[];
   banned: boolean;
   overrideCatalogIds: string[];
-  launcher: Record<string, unknown> | null;
+  launcher: FnccLightswitchLauncher | null;
 }
 
 export interface FnccLightswitchResponse {
@@ -534,16 +849,48 @@ export interface FnccLightswitchResponse {
   data: FnccLightswitchService[];
 }
 
+export interface FnccExternalAuthId {
+  id: string;
+  type: string;
+}
+
+export interface FnccExternalAuth {
+  accountId: string;
+  type: string;
+  externalAuthId?: string;
+  externalAuthIdType?: string;
+  externalAuthSecondaryId?: string;
+  externalDisplayName?: string;
+  avatar?: string;
+  authIds: FnccExternalAuthId[];
+}
+
+export interface FnccLookupNameMatch {
+  value: string;
+  platform: string;
+}
+
 export interface FnccLookupMatch {
+  accountId: string;
+  displayName: string;
+  externalAuths: Record<string, FnccExternalAuth>;
+  matchType?: string;
+  matches?: FnccLookupNameMatch[];
+  epicMutuals?: number;
+  sortPosition?: number;
+  links?: Record<string, unknown>;
+}
+
+export interface FnccLookupQuery {
   accountId?: string;
-  displayName?: string;
-  externalAuths?: Record<string, unknown>;
-  [key: string]: unknown;
+  name?: string;
+  platform?: string;
+  resolved: string;
 }
 
 export interface FnccLookupResponse {
   status: number;
-  query: Record<string, unknown>;
+  query: FnccLookupQuery;
   exactCount: number;
   moreCount: number;
   count: number;
@@ -551,37 +898,102 @@ export interface FnccLookupResponse {
   more: FnccLookupMatch[];
 }
 
+export interface FnccMnemonicImages {
+  full: string | null;
+  medium: string | null;
+  small: string | null;
+  tiny: string | null;
+}
+
+export interface FnccMnemonicMatchmaking {
+  v1: Record<string, unknown> | null;
+  v2: Record<string, unknown> | null;
+  v3: Record<string, unknown> | null;
+  plugins: string[] | null;
+}
+
 export interface FnccMnemonic {
   mnemonic: string;
   linkType: string;
   creator: string;
-  title: string;
-  description: string;
-  image: string;
-  images: FnccImages;
-  parentExperience: Record<string, unknown> | null;
+  title: string | null;
+  description: string | null;
+  image: string | null;
+  images: FnccMnemonicImages;
+  parentExperience: string | null;
   matchmakingId: string | null;
-  matchmaking: Record<string, unknown> | null;
+  matchmaking: FnccMnemonicMatchmaking;
   metadata: Record<string, unknown>;
 }
 
+export interface FnccMnemonicLink {
+  namespace: string;
+  accountId: string;
+  creatorName: string;
+  mnemonic: string;
+  linkType: string;
+  metadata: Record<string, unknown>;
+  version: number;
+  active: boolean;
+  disabled: boolean;
+  created: string;
+  published: string;
+  updated: string;
+  descriptionTags: string[];
+  moderationStatus: string;
+  lastActivatedDate: string;
+  discoveryIntent: string;
+  linkState: string;
+}
+
+export interface FnccMnemonicRelated {
+  parentLinks: FnccMnemonicLink[];
+  links: Record<string, FnccMnemonicLink>;
+}
+
 export interface FnccNewsMessage {
-  title?: string;
-  body?: string;
+  title: string;
+  body: string;
   image?: string;
-  [key: string]: unknown;
+  hidden?: boolean;
+  messagetype?: string;
+  spotlight?: boolean;
+  layout?: string;
+}
+
+export interface FnccNewsPlatformMessageContent {
+  entryType: string;
+  image: string;
+  tileImage: string;
+  hidden: boolean;
+  videoMute: boolean;
+  title: string;
+  body: string;
+  videoLoop: boolean;
+  videoStreamingEnabled: boolean;
+  id: string;
+  videoAutoplay: boolean;
+  videoFullscreen: boolean;
+  spotlight: boolean;
+  sortingPriority?: number;
+}
+
+export interface FnccNewsPlatformMessage {
+  hidden: boolean;
+  message: FnccNewsPlatformMessageContent;
+  platform: string;
 }
 
 export interface FnccNewsFeed {
   id: string;
   contentKey: string;
   title: string | null;
-  style: string;
+  style: string | null;
   alwaysShow: boolean;
   lastModified: string;
   messageCount: number;
   messages: FnccNewsMessage[];
-  platformMessages: FnccNewsMessage[];
+  platformMessages: FnccNewsPlatformMessage[];
 }
 
 export interface FnccNewsResponse {
@@ -593,22 +1005,82 @@ export interface FnccNewsResponse {
   data: FnccNewsFeed[];
 }
 
+export interface FnccPlaylistImages {
+  missionIcon: string | null;
+  cover?: string;
+}
+
+export interface FnccPlaylistLootPool {
+  id: string;
+  name: string;
+  experience: string;
+  experienceId: string;
+  map: string | null;
+  mapCode: string | null;
+  itemCount: number;
+  containerCount: number;
+}
+
+export interface FnccMatchmakingFillRate {
+  MinMmr: number;
+  MaxMmr: number;
+  MinFillPct: number;
+  MaxFillPct: number;
+  MaxPriority: number;
+}
+
+export interface FnccMatchmakingRatingBracket {
+  MinMmr: number;
+  MaxMmr: number;
+}
+
+export interface FnccMatchmakingRatingExpansion {
+  Priority: number;
+  RatingDelta: number;
+}
+
+export interface FnccPlaylistMatchmaking {
+  service: string | null;
+  routedByHotfix: boolean;
+  supports: { v1: boolean; v2: boolean; v3: boolean };
+  v1: Record<string, unknown> | null;
+  v2: Record<string, unknown> | null;
+  v3: Record<string, unknown> | null;
+  v3Version: number | null;
+  v3Options: string[] | null;
+  plugins: string[] | null;
+  ratingType: string | null;
+  usesPlayerRating: boolean;
+  strategy: string | null;
+  minBracketSize: number | null;
+  maxBracketSize: number | null;
+  maxBucketCapacity: number | null;
+  maxPendingMatches: number | null;
+  multidivisionQueues: boolean;
+  limitedPool: boolean;
+  allowSinglePartyMatches: boolean;
+  enableRatingUpdate: boolean;
+  fillRateTable: FnccMatchmakingFillRate[] | null;
+  playerRatingBrackets: FnccMatchmakingRatingBracket[] | null;
+  priorityRatingExpansion: FnccMatchmakingRatingExpansion[] | null;
+}
+
 export interface FnccPlaylist {
   id: string;
-  playlistId: string | null;
+  playlistId: number | null;
   name: string;
   subName: string | null;
   description: string | null;
-  gameType: string;
-  ratingType: string;
-  minPlayers: number;
+  gameType: string | null;
+  ratingType: string | null;
+  minPlayers: number | null;
   maxPlayers: number;
   maxTeams: number;
   maxTeamSize: number;
   maxSquads: number | null;
   maxSquadSize: number;
   maxSocialPartySize: number | null;
-  maxHumanAndBotParticipants: number;
+  maxHumanAndBotParticipants: number | null;
   isDefault: boolean;
   isTournament: boolean;
   isRanked: boolean;
@@ -616,43 +1088,92 @@ export interface FnccPlaylist {
   isLargeTeamGame: boolean;
   usePlayerRating: boolean;
   allowJoinInProgress: boolean;
-  winCondition: string;
+  winCondition: string | null;
   respawnType: string | null;
-  richPresence: string;
+  richPresence: string | null;
   map: string | null;
   gameplayTags: string[];
   modifiers: string[];
   hiddenHudElements: string[];
   requiredPlugins: string[];
-  images: FnccImages;
-  added: FnccIntroduction | null;
+  images: FnccPlaylistImages;
+  added: string | null;
   path: string;
   properties: Record<string, unknown>;
-  parentExperience: Record<string, unknown> | null;
-  matchmaking: Record<string, unknown> | null;
+  lootPool: FnccPlaylistLootPool | null;
+  parentExperience: string | null;
+  matchmaking: FnccPlaylistMatchmaking;
+  hidden?: boolean;
+  specialBorder?: unknown;
+}
+
+export interface FnccWeaponRangeBands {
+  close: number;
+  mid: number;
+  long: number;
+  max: number;
+}
+
+export interface FnccWeaponStats {
+  table: string;
+  row: string;
+  damagePerSecond: number | null;
+  damage: FnccWeaponRangeBands;
+  environmentDamage: FnccWeaponRangeBands;
+  impactDamage: FnccWeaponRangeBands;
+  range: FnccWeaponRangeBands;
+  headshotMultiplier: number;
+  firingRate: number | null;
+  burstFiringRate: number | null;
+  clipSize: number;
+  reloadTime: number;
+  reloadType: string;
+  bulletsPerCartridge: number | null;
+  cartridgePerFire: number;
+  ammoCostPerFire: number;
+  maxSpareAmmo: number | null;
+  initialClips: number;
+  spread: number | null;
+  spreadDownsights: number | null;
+  recoilVertical: number | null;
+  recoilHorizontal: number | null;
+  aimTransitionIn: number | null;
+  aimTransitionOut: number | null;
+  projectileVelocity: number | null;
+  minChargeTime: number;
+  maxChargeTime: number;
+  baseLevel: number;
+  raw?: Record<string, unknown>;
+}
+
+export interface FnccWeaponImages {
+  icon: string | null;
+  largeIcon: string | null;
+  miniMapIcon: string | null;
 }
 
 export interface FnccWeapon {
   id: string;
   name: string;
-  description: string;
+  description: string | null;
   shortDescription: string | null;
   type: string;
-  category: string;
+  category: string | null;
   subCategory: string | null;
-  rarity: FnccRarity | null;
-  tier: string | null;
-  ammoType: string;
+  rarity: string | null;
+  tier: number | null;
+  ammoType: string | null;
   triggerType: string | null;
   isRanged: boolean;
   isMelee: boolean;
   analyticTags: string[];
   searchTags: string[];
   traits: string[];
-  mesh: string;
-  stats: Record<string, unknown>;
-  images: FnccImages;
-  added: FnccIntroduction | null;
+  tags: string[];
+  mesh: string | null;
+  stats: FnccWeaponStats | null;
+  images: FnccWeaponImages;
+  added: string | null;
   path: string;
   properties: Record<string, unknown>;
 }
@@ -671,3 +1192,406 @@ export interface FnccWeaponFilters {
   triggerTypes: Record<string, number>;
   types: Record<string, number>;
 }
+
+export interface FnccLootPoolSummary {
+  id: string;
+  name: string;
+  experience: string;
+  experienceId: string;
+  map: string | null;
+  mapCode: string | null;
+  zeroBuild: boolean;
+  ranked: boolean;
+  competitive: boolean;
+  teamSize: number | null;
+  itemCount: number;
+  containerCount: number;
+  hotfixCount: number;
+  playlistCount: number;
+}
+
+export interface FnccLootRange {
+  min: number;
+  max: number;
+}
+
+export interface FnccLootDrop {
+  id: string;
+  name: string | null;
+  rarity: string | null;
+  type: string;
+  chance: number;
+  count: FnccLootRange;
+  images: { icon: string } | null;
+}
+
+export interface FnccLootContainer {
+  id: string;
+  name: string;
+  drops: FnccLootRange;
+  resolved: number;
+  items: FnccLootDrop[];
+}
+
+export interface FnccLootContainerSummary {
+  id: string;
+  name: string;
+  items: number;
+  resolved: number;
+  drops: FnccLootRange;
+}
+
+export interface FnccLootPoolTables {
+  tier: string;
+  package: string;
+  merged: string[];
+}
+
+export interface FnccLootPoolPlaylist {
+  id: string;
+  name: string;
+  gameType: string;
+  tags: string[];
+}
+
+export interface FnccLootPool extends FnccLootPoolSummary {
+  tables: FnccLootPoolTables;
+  borrowedFrom: Record<string, number>;
+  unresolved: string[];
+  playlists: FnccLootPoolPlaylist[];
+  hotfixes: Record<string, unknown>[];
+  containers: FnccLootContainer[];
+}
+
+export interface FnccLootPoolWithContainers extends FnccLootPoolSummary {
+  containers: FnccLootContainer[];
+}
+
+export interface FnccLootPoolContainers extends Omit<FnccLootPool, 'containers'> {
+  containers: FnccLootContainerSummary[];
+}
+
+export interface FnccLootHit extends FnccLootDrop {
+  pool: string;
+  poolName: string;
+  experience: string;
+  map: string | null;
+  container: string;
+  containerName: string;
+}
+
+export interface FnccLootSearchResponse {
+  status: number;
+  total: number;
+  count: number;
+  data: FnccLootHit[];
+}
+
+export interface FnccShortLink {
+  code: string;
+  url: string;
+  target: string;
+  createdAt: string;
+  expiresAt: string;
+  expiresInHours: number;
+}
+
+export interface FnccShortenStats {
+  links: number;
+  audit: number;
+}
+
+export interface FnccSeason {
+  season: number;
+  chapter: string;
+  seasonInChapter: string;
+  displayName: string;
+  gameName: string | null;
+  storefront: string | null;
+  current: boolean;
+}
+
+export interface FnccBattlePassOffers {
+  seasonPassOfferId: string;
+  seasonPassLevelOfferId: string;
+  seasonPassBundleOfferId?: string;
+  seasonPassLevelBundleOfferId?: string;
+}
+
+export interface FnccBattlePassReward {
+  id: string;
+  type: string;
+  name: string | null;
+  rarity: FnccRarity | null;
+  images: FnccImages | null;
+  tier: string;
+  cost: number;
+  currency: string;
+  path: string;
+}
+
+export interface FnccBattlePassCategory {
+  title: string;
+  subtitle: string;
+  rewardCount: number;
+  rewards: FnccBattlePassReward[];
+}
+
+export interface FnccBattlePass {
+  id: string;
+  season: number;
+  name: string;
+  displayName: string;
+  description: string;
+  storefront: string;
+  passId: string;
+  offers: FnccBattlePassOffers;
+  rewardCount: number;
+  categories: FnccBattlePassCategory[];
+}
+
+export interface FnccBundleItem {
+  templateId: string;
+  type: string;
+  id: string;
+  name: string | null;
+  rarity: FnccRarity | null;
+  quantity: number;
+  regularPrice: number | null;
+  discountedPrice: number | null;
+  images: FnccImages | null;
+}
+
+export interface FnccBundlePrice {
+  currency: string;
+  regularPrice: number | null;
+  finalPrice: number;
+}
+
+export interface FnccBundle {
+  id: string;
+  name: string | null;
+  bundleId: string | null;
+  displayAsset: string;
+  items: FnccBundleItem[];
+  price: FnccBundlePrice;
+  images: FnccShopImages | null;
+  firstSeen: string;
+  lastSeen: string;
+  occurrences: number;
+  inShop: boolean;
+  offerIds: string[];
+}
+
+export interface FnccBundlesResponse {
+  status: number;
+  total: number;
+  count: number;
+  data: FnccBundle[];
+}
+
+export interface FnccAvailability {
+  forcedOffIn: string[];
+  forcedOnIn: string[];
+}
+
+export interface FnccModeImages {
+  lobby: string | null;
+  matchmaking: string;
+}
+
+export interface FnccModeMapLootPool {
+  id: string;
+  name: string;
+  zeroBuild: boolean;
+  ranked: boolean;
+}
+
+export interface FnccModeMap {
+  code: string;
+  name: string | null;
+  localisedNames: Record<string, string> | null;
+  inRotation: boolean;
+  modes: string[] | null;
+  rotationDuration: number | null;
+  islandCodes: string[];
+  images: FnccModeImages | null;
+  lootPools: FnccModeMapLootPool[];
+  playlistCount: number;
+  availability: FnccAvailability;
+}
+
+export interface FnccModeSubstitution {
+  base: string;
+  active: string;
+}
+
+export interface FnccModeRotation {
+  name: string | null;
+  localisedNames: Record<string, string>;
+  duration: number;
+  modes: string[] | null;
+  islandCodes: string[];
+  mapCodes: string[];
+  images: FnccModeImages;
+  substitutions: FnccModeSubstitution[];
+}
+
+export interface FnccModeMapRef {
+  code: string;
+  name: string | null;
+}
+
+export interface FnccMode {
+  id: string;
+  name: string;
+  description: string;
+  mnemonic: string;
+  image: string;
+  enabled: boolean;
+  updated: string;
+  lootPoolCount: number;
+  playlistCount: number;
+  inRotation: Record<string, FnccModeMapRef[]>;
+  maps: FnccModeMap[];
+  availability: FnccAvailability;
+  rotation: FnccModeRotation[];
+  events?: Record<string, unknown>[];
+}
+
+export interface FnccModeSeason {
+  number: number;
+  begin: string;
+  end: string;
+  displayedEnd: string;
+}
+
+export interface FnccModes {
+  fetchedAt: string;
+  currentTime: string;
+  season: FnccModeSeason;
+  modes: FnccMode[];
+}
+
+export interface FnccQuestObjective {
+  description: string | null;
+  hudDescription: string | null;
+  count: number | null;
+  displayStage?: number | null;
+  displayMaxStage?: number | null;
+}
+
+export interface FnccQuestReward {
+  type: string;
+  templateId: string | null;
+  quantity: number;
+  hidden: boolean;
+}
+
+export interface FnccQuest {
+  templateId: string;
+  name: string | null;
+  description: string | null;
+  flavorText: string | null;
+  type: string | null;
+  subtype: string | null;
+  sortPriority: number | null;
+  tags: string[];
+  visibleToPlayers: boolean;
+  includedInCategories: boolean;
+  canShowInPostMatch: boolean;
+  completionText: string | null;
+  visibleWhen: { active?: boolean; completed?: boolean; claimed?: boolean; expired?: boolean };
+  allowPinning: boolean;
+  objectives: Record<string, FnccQuestObjective>;
+  rewards: FnccQuestReward[] | null;
+  path: string;
+}
+
+export interface FnccStwQuest {
+  templateId: string;
+  name: string | null;
+  description: string | null;
+  completionText: string | null;
+  type: string | null;
+  category: string | null;
+  objectives: Record<string, FnccQuestObjective>;
+  rewards: FnccQuestReward[] | null;
+  path: string;
+}
+
+export interface FnccQuestBundle {
+  templateId: string;
+  tags: string[];
+  quests: string[];
+  calendarEventTag: string | null;
+  path: string;
+}
+
+export interface FnccQuestCategoryHeader {
+  name: string | null;
+  description: string | null;
+  tag: string;
+  sortOrder: number;
+}
+
+export interface FnccQuestCategory {
+  id: string;
+  name: string;
+  description: string | null;
+  sortOrder: number;
+  enabled: boolean;
+  alwaysDisplay: boolean;
+  includeTags: string[];
+  product: string | null;
+  mode: string | null;
+  defaultHeader: { name: string | null; sortOrder: number };
+  headers: FnccQuestCategoryHeader[];
+  extra?: Record<string, unknown>;
+  path: string;
+}
+
+export interface FnccStwQuestCategory {
+  id: string;
+  name: string;
+  sortPriority: number;
+}
+
+export interface FnccQuestCatalogMeta {
+  build: string;
+  generatedAt: string;
+  lang: string;
+  counts?: Partial<Record<'quests' | 'bundles' | 'categories' | 'stwQuests' | 'stwCategories' | 'skipped', number>>;
+}
+
+export interface FnccQuestCatalog extends FnccQuestCatalogMeta {
+  quests: Record<string, FnccQuest>;
+  bundles: Record<string, FnccQuestBundle>;
+  categories: FnccQuestCategory[];
+  stwQuests: Record<string, FnccStwQuest>;
+  stwCategories: Record<string, FnccStwQuestCategory>;
+}
+
+export interface FnccQuestCategories extends FnccQuestCatalogMeta {
+  categories: FnccQuestCategory[];
+}
+
+export interface FnccQuestBundles extends FnccQuestCatalogMeta {
+  bundles: Record<string, FnccQuestBundle>;
+}
+
+export interface FnccStwQuests extends FnccQuestCatalogMeta {
+  stwQuests: Record<string, FnccStwQuest>;
+  stwCategories: Record<string, FnccStwQuestCategory>;
+}
+
+export interface FnccQuestLookup {
+  build: string;
+  generatedAt: string;
+  lang: string;
+  quests: Record<string, FnccQuest>;
+  stwQuests: Record<string, FnccStwQuest>;
+  missing: string[];
+}
+
+export type FnccQuestEntry = (FnccQuest & { source: 'athena' }) | (FnccStwQuest & { source: 'stw' });

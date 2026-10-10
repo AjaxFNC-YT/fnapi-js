@@ -75,6 +75,13 @@ export type {
   LockerSchemaLoadout,
   LockerLoadoutSlot,
   LockerItemCustomization,
+  LockerLoadoutGroupPreset,
+  LockerLoadoutPreset,
+  LockerVariantTag,
+  LockerCosmeticData,
+  LockerCosmeticDataPage,
+  LockerCosmeticDataOptions,
+  LockerGroupPresetInput,
 } from './eos.js';
 
 export {
@@ -134,6 +141,13 @@ export {
   GIFT_CURRENCY,
   GIFT_GAME_CONTEXT,
   GIFT_DEFAULT_CURRENCY_SUBTYPE,
+  PURCHASE_GAME_CONTEXT,
+  REFUND_GAME_CONTEXT,
+  ShopError,
+  ShopErrorReason,
+  shopErrorReason,
+  toShopError,
+  parsePurchaseHistory,
 } from './shop.js';
 export type {
   ShopPrice,
@@ -142,6 +156,11 @@ export type {
   GiftTarget,
   GiftOptions,
   GiftResult,
+  GiftEligibility,
+  PurchaseOptions,
+  PurchaseResult,
+  PurchaseRecord,
+  PurchaseHistory,
   StorefrontCatalog,
   RawCatalogEntry,
   RawCatalogPrice,
@@ -239,6 +258,8 @@ export type {
   CommonCoreItem,
   VbucksEntry,
   VbucksBalance,
+  FortniteVersion,
+  GiftEligibilityResponse,
 } from './game.js';
 
 export {
@@ -349,6 +370,188 @@ export type {
 } from './library.js';
 
 export {
+  RankTier,
+  RANK_TIER_COLORS,
+  RANKED_MODES,
+  RANKED_UNPLAYED_TIMESTAMP,
+  rankForDivision,
+  unrankedRank,
+  rankedMode,
+  toRankedStanding,
+  unrealLegendRank,
+  rankForTrack,
+  trackSeason,
+  UNREAL_LEGEND_TOP_POSITIONS,
+} from './ranked.js';
+export type {
+  RankTierColors,
+  RankInfo,
+  RankedModeInfo,
+  RankedStanding,
+  RankedStandingOptions,
+} from './ranked.js';
+
+export {
+  ContentPagesManager,
+  CONTENT_PAGES_BASE_URL,
+  ContentPageKey,
+} from './content.js';
+export type {
+  ContentPageOptions,
+  ContentSection,
+  ContentPage,
+  ContentEmergencyNotice,
+  ContentMotd,
+  ContentTournament,
+  ContentBackground,
+  ContentShopSection,
+  ContentLoginMessage,
+} from './content.js';
+
+export { QuestService, QUEST_SERVICE_BASE_URL } from './quests.js';
+export type {
+  QuestObjectiveProgress,
+  QuestProgressEntry,
+  ChallengeBundleEntry,
+  ChallengeScheduleEntry,
+  QuestAccountXp,
+  QuestProgressResponse,
+  QuestProgressOptions,
+} from './quests.js';
+
+export {
+  LinksManager,
+  LINKS_BASE_URL,
+  DISCOVERY_BASE_URL,
+  LINKS_NAMESPACE,
+  LINKS_BULK_LIMIT,
+  CREATOR_PAGE_LIMIT,
+  toIsland,
+} from './links.js';
+export type {
+  LinkImageUrls,
+  LinkRatingBoard,
+  LinkMatchmaking,
+  LinkMetadata,
+  LinkMnemonic,
+  LinkRelated,
+  CreatorPageLink,
+  CreatorPage,
+  LinkLookup,
+  LinksBaseOptions,
+  LinkLookupOptions,
+  CreatorPageOptions,
+  Island,
+} from './links.js';
+
+export {
+  EventsManager,
+  EVENTS_BASE_URL,
+  EVENTS_GAME_ID,
+  EventRegion,
+  EVENT_LEADERBOARD_PAGES,
+  toTournaments,
+  windowStatus,
+  windowEligible,
+} from './events.js';
+export type {
+  EventLink,
+  EventMetadata,
+  EventScoreLocation,
+  EventWindow,
+  EventInfo,
+  EventTiebreakerFormula,
+  EventScoringRule,
+  EventPayout,
+  EventPayoutTier,
+  EventTemplate,
+  EventLeaderboardDef,
+  EventPlayer,
+  EventSessionSummary,
+  EventScore,
+  EventsData,
+  EventLeaderboard,
+  EventTokens,
+  EventsBaseOptions,
+  EventsDataOptions,
+  EventsDownloadOptions,
+  EventHistoryOptions,
+  EventLeaderboardOptions,
+  EventScoresOptions,
+  TournamentStatus,
+  TournamentWindow,
+  TournamentBracket,
+  TournamentImages,
+  Tournament,
+  TournamentListOptions,
+  TournamentShapeOptions,
+} from './events.js';
+
+export {
+  MotdManager,
+  MOTD_BASE_URL,
+  MOTD_DEFAULT_TAGS,
+} from './motd.js';
+export type {
+  MotdParameters,
+  MotdOptions,
+  MotdImage,
+  MotdVideo,
+  MotdBackground,
+  MotdButton,
+  MotdContentFields,
+  MotdPlacement,
+  MotdItem,
+  MotdResponse,
+} from './motd.js';
+
+export {
+  ContentServiceManager,
+  CONTENT_SERVICE_BASE_URL,
+  parseFortniteBuild,
+  contentKeyToHex,
+  toIslandKey,
+} from './contentService.js';
+export type {
+  FortniteBuild,
+  CookedPackageOptions,
+  ContentModuleRef,
+  ContentAccountRef,
+  ContentLiveLink,
+  ContentProjectFlags,
+  ContentModuleBinaries,
+  ContentModule,
+  CookedContentPackage,
+  ContentModuleKey,
+  IslandKey,
+  IslandLaunchResult,
+} from './contentService.js';
+
+export {
+  LauncherManager,
+  LAUNCHER_BASE_URL,
+  LauncherInstaller,
+  FORTNITE_CATALOG_ITEM_ID,
+  FORTNITE_NAMESPACE,
+  FORTNITE_APP_NAME,
+  FORTNITE_APK_BASE_URL,
+  ANDROID_DEVICE_PROFILE,
+  apkFromBuild,
+} from './launcher.js';
+export type {
+  LauncherBuildOptions,
+  LauncherManifest,
+  LauncherBuildElement,
+  LauncherBuild,
+  LauncherAsset,
+  LauncherInstallerDownload,
+  LauncherDeviceProfile,
+  LauncherAssetItem,
+  LauncherAppAsset,
+  LauncherApk,
+} from './launcher.js';
+
+export {
   EpicStatusManager,
   STATUS_BASE_URL,
   STATUS_FORTNITE_PATTERN,
@@ -431,6 +634,8 @@ export type {
   SignedMessageInput,
   SignedMessage,
   ChatPresenceOptions,
+  EosOwnPresence,
+  EosPresenceNamespace,
 } from './chat.js';
 
 export {
@@ -440,6 +645,7 @@ export {
   CONNECT_SEC_PROTOCOLS,
   normalizeConnectPresence,
   decodeEosProps,
+  loadConnectWebSocket,
 } from './connect.js';
 export type {
   ConnectState,

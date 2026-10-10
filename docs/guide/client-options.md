@@ -104,4 +104,6 @@ const ct = res.header('content-type');
 
 ## `MemoryCache`
 
+A single call can opt in even when the client cache is off: `cache: { ttl: 300_000 }` stores that response for five minutes, and `cache: true` uses the client default. Identical GETs that are already in flight share one request regardless of caching, so ten concurrent `fncc.playlists.list()` calls hit the network once.
+
 When caching is enabled, GET responses are stored in an LRU `MemoryCache` reachable at `client.rest.cache`. It is bounded by `maxEntries` (evicting the oldest entry) and each entry expires after its `ttl`. Cached hits are returned as fresh `ApiResponse` objects with `cached === true` and a deep-cloned body, so mutating a result never corrupts the cache. Useful methods: `get`, `has`, `set`, `delete`, `clear`, `prune`, and the `size` getter.

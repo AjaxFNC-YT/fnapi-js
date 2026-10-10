@@ -1,6 +1,7 @@
 import { USER_AGENT } from '../core/version.js';
-import { AbortError, NetworkError, ParseError, TimeoutError } from '../core/errors.js';
-import type { FetchLike, HttpMethod, QueryParams } from '../core/types.js';
+import { AbortError, NetworkError, ParseError, TimeoutError, parseRetryAfter } from '../core/errors.js';
+import { MemoryCache } from '../core/cache.js';
+import type { FetchLike, HttpMethod, QueryParams, RequestCacheOptions } from '../core/types.js';
 import { backoffDelay, buildQuery, linkSignals, sleep } from '../core/utils.js';
 import { createEpicError } from './errors.js';
 import type { AuthClient } from './clients.js';
@@ -31,6 +32,9 @@ export interface EpicRequestOptions {
   signal?: AbortSignal;
   timeout?: number;
   deviceId?: string;
+  idempotent?: boolean;
+  cache?: boolean | RequestCacheOptions;
+  redirect?: RequestRedirect;
 }
 
 export interface EpicResponse<T> {
@@ -40,6 +44,10 @@ export interface EpicResponse<T> {
 }
 
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+
+const NON_IDEMPOTENT_METHODS = new Set<HttpMethod>(['POST', 'PATCH']);
+
+const MAX_RETRY_AFTER_MS = 30_000;
 
 function toBase64(value: string): string {
   if (typeof globalThis.btoa === 'function') {
@@ -74,6 +82,8 @@ export class EpicRestClient {
 
   private readonly retry: number;
   private readonly fetchImpl: FetchLike;
+  private readonly responses = new MemoryCache<EpicResponse<unknown>>({ ttl: 60_000, maxEntries: 500 });
+  private readonly inflight = new Map<string, Promise<EpicResponse<unknown>>>();
   private readonly defaultHeaders: Record<string, string>;
 
   constructor(options: EpicRestOptions = {}) {
@@ -107,7 +117,36 @@ export class EpicRestClient {
     path: string,
     options: EpicRequestOptions = {},
   ): Promise<EpicResponse<T>> {
+    if (method !== 'GET' || options.signal) return this.perform<T>(method, path, options);
+    const identity = options.bearer ?? options.basic?.clientId ?? '';
+    const key = `${this.buildUrl(path, options.query)}|${identity}|${options.responseType ?? ''}|${JSON.stringify(options.headers ?? {})}`;
+    const ttl = typeof options.cache === 'object' ? options.cache.ttl : undefined;
+    const load = () => this.perform<unknown>(method, path, options);
+    if (!options.cache) return (await this.share(key, load)) as EpicResponse<T>;
+    return (await this.responses.wrap(key, () => this.share(key, load), ttl)) as EpicResponse<T>;
+  }
+
+  clearCache(): void {
+    this.responses.clear();
+  }
+
+  private share(key: string, load: () => Promise<EpicResponse<unknown>>): Promise<EpicResponse<unknown>> {
+    const existing = this.inflight.get(key);
+    if (existing) return existing;
+    const pending = load().finally(() => {
+      this.inflight.delete(key);
+    });
+    this.inflight.set(key, pending);
+    return pending;
+  }
+
+  private async perform<T>(
+    method: HttpMethod,
+    path: string,
+    options: EpicRequestOptions,
+  ): Promise<EpicResponse<T>> {
     const url = this.buildUrl(path, options.query);
+    const replayable = options.idempotent ?? !NON_IDEMPOTENT_METHODS.has(method);
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= this.retry; attempt += 1) {
@@ -119,9 +158,15 @@ export class EpicRestClient {
           headers: this.composeHeaders(options),
           body: this.composeBody(options) as RequestInit['body'],
           signal: link.signal,
+          ...(options.redirect ? { redirect: options.redirect } : {}),
         });
 
         const headers = headersToRecord(response.headers);
+
+        if (options.redirect === 'manual' && response.status >= 300 && response.status < 400) {
+          await response.body?.cancel();
+          return { status: response.status, headers, data: null as T };
+        }
 
         if (response.ok && options.responseType === 'binary') {
           const buffer = await response.arrayBuffer();
@@ -140,9 +185,10 @@ export class EpicRestClient {
             headers,
           });
 
-          if (attempt < this.retry && RETRYABLE_STATUS.has(response.status)) {
+          const retryable = response.status === 429 || (replayable && RETRYABLE_STATUS.has(response.status));
+          if (attempt < this.retry && retryable) {
             lastError = error;
-            await sleep(backoffDelay(attempt, 500, 8_000), options.signal);
+            await sleep(retryDelay(attempt, headers['retry-after']), options.signal);
             continue;
           }
 
@@ -158,7 +204,7 @@ export class EpicRestClient {
         if (normalized instanceof AbortError) throw normalized;
 
         lastError = normalized;
-        if (attempt >= this.retry) throw normalized;
+        if (attempt >= this.retry || !replayable) throw normalized;
 
         try {
           await sleep(backoffDelay(attempt, 500, 8_000), options.signal);
@@ -239,6 +285,12 @@ export class EpicRestClient {
       { url, cause: error },
     );
   }
+}
+
+function retryDelay(attempt: number, retryAfter: string | undefined): number {
+  const backoff = backoffDelay(attempt, 500, 8_000);
+  const requested = parseRetryAfter(retryAfter);
+  return requested === null ? backoff : Math.min(MAX_RETRY_AFTER_MS, Math.max(backoff, requested));
 }
 
 function isEpicError(error: unknown): boolean {

@@ -74,6 +74,8 @@ Once the session has connected at least once, an **unexpected** stream drop (Epi
 | `reconnectMaxDelayMs` | `30000` | Upper bound on the backoff delay. |
 | `maxReconnectAttempts` | `0` | Cap on consecutive attempts (`0` = unlimited). Emits `error` when exhausted. |
 
+A keepalive watchdog also catches half-open connections (laptop sleep, Wi-Fi switch, NAT timeout) that never fire a `close` event: if nothing — not even a ping reply — arrives for two `pingIntervalMs` windows, the socket is dropped with code `4000` and the normal reconnect runs. Call `reconnect()` to force a fresh session yourself.
+
 Only unexpected drops reconnect — a `disconnect()` you call yourself does not, and the very first `connect()` still rejects on failure so you can handle initial errors directly. Backoff resets to zero on every successful reconnect. There is **no** periodic re-broadcast: the status is only ever (re)sent on connect, so it is refreshed on every reconnect.
 
 ```ts

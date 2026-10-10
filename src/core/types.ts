@@ -32,12 +32,16 @@ export interface CacheOptions {
   maxEntries?: number;
 }
 
+export interface RequestCacheOptions {
+  ttl?: number;
+}
+
 export interface RequestOptions {
   query?: QueryParams;
   headers?: Record<string, string>;
   body?: unknown;
   signal?: AbortSignal;
   timeout?: number;
-  cache?: boolean;
+  cache?: boolean | RequestCacheOptions;
   retry?: number | false;
 }

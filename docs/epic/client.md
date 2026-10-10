@@ -9,13 +9,15 @@ The high-level Epic Games account-service auth client. Wires together a `RestCli
 class EpicGamesClient { constructor(options?: EpicClientOptions) }
 ```
 
-Constructs the client. `EpicClientOptions` extends `EpicRestOptions` — pass `defaultClient` to set the auth client used when a method omits one (defaults to `AuthClients.fortnitePC`), plus transport options `baseUrl`, `timeout`, `retry`, `userAgent`, `fetch`, and `headers`.
+Constructs the client. `EpicClientOptions` extends `EpicRestOptions` — pass `defaultClient` to set the auth client used when a method omits one (defaults to `AuthClients.fortniteAndroid`), plus transport options `baseUrl`, `timeout`, `retry`, `userAgent`, `fetch`, and `headers`.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `options.defaultClient` | `AuthClientInput` | Default auth client for calls that don't specify one. Accepts an `AuthClient`, a registry name like `'fortnitePC'`, or a raw client id string. Defaults to `AuthClients.fortnitePC`. |
+| `options.defaultClient` | `AuthClientInput` | Default auth client for calls that don't specify one. Accepts an `AuthClient`, a registry name like `'fortnitePC'`, or a raw client id string. Defaults to `AuthClients.fortniteAndroid`. |
 | `options.timeout` | `number` | Per-request timeout in milliseconds. |
-| `options.retry` | `number` | Retry attempts for failed requests. |
+| `options.retry` | `number` | Total attempts per request (default `3`). GET / PUT / DELETE retry on 429 and 5xx and on network errors; POST / PATCH retry only on 429 so a gift or purchase is never sent twice. `Retry-After` is honoured up to 30s. Token grants for `device_auth` / `client_credentials` and the read-only MCP `QueryProfile` / `QueryPublicProfile` are treated as replayable. |
+| `options.cache` (per request) | `boolean \| { ttl }` | Not a constructor option: GET-backed methods across the package accept `cache: true` (60s) or `cache: { ttl }` to keep that response in memory. Identical GETs that are in flight at the same time always share one request, keyed per token. `session.matchmakingNetCL({ cache: { ttl } })` caches the netCL lookup the same way. |
+| `options.connectWebSocket` | `ConnectWebSocketFactory` | Header-capable WebSocket factory used by every session's connect stream. Optional on Node — the `ws` package is loaded automatically. |
 | `options.baseUrl` | `string` | Override the Epic account-service base URL. |
 | `options.fetch` | `FetchLike` | Custom fetch implementation. |
 | `options.headers` | `Record<string, string>` | Extra default headers sent on every request. |

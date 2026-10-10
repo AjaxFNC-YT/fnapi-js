@@ -59,12 +59,16 @@ export interface ConnectClientOptions {
   url?: string;
   connectionTimeoutMs?: number;
   autoReconnect?: boolean;
+  reconnectInitialDelayMs?: number;
+  reconnectMaxDelayMs?: number;
+  maxReconnectAttempts?: number;
   debug?: (direction: 'in' | 'out', data: string) => void;
 }
 
 export interface ConnectEventMap {
   connected: { connectionId: string };
   disconnected: { code: number; reason: string };
+  reconnecting: { attempt: number; delay: number };
   'friend:message': ConnectFriendMessage;
   'party:message': ConnectPartyMessage;
   presence: ConnectPresenceUpdate;
@@ -74,23 +78,26 @@ export interface ConnectEventMap {
   error: Error;
 }
 
-const HEADERLESS_FACTORY = Symbol('headerlessConnectFactory');
+const WS_MODULE = 'ws';
 
-type BrandedFactory = ConnectWebSocketFactory & { [HEADERLESS_FACTORY]?: boolean };
+type NodeWebSocketConstructor = new (
+  url: string,
+  options?: { headers?: Record<string, string> },
+) => WebSocketLike;
 
-function resolveConnectWebSocketFactory(factory?: ConnectWebSocketFactory): BrandedFactory {
-  if (factory) return factory;
-  const globalWebSocket = (globalThis as { WebSocket?: unknown }).WebSocket;
-  if (typeof globalWebSocket !== 'function') {
-    throw new ConfigurationError(
-      'No global WebSocket implementation was found. Pass a `webSocket` factory (for example one backed by the "ws" package, which can set the required Authorization header) in the connect options.',
-      'webSocket',
-    );
-  }
-  const fallback: BrandedFactory = (url, protocols) =>
-    new (globalWebSocket as new (url: string, protocols?: string | string[]) => WebSocketLike)(url, protocols);
-  fallback[HEADERLESS_FACTORY] = true;
-  return fallback;
+let nodeWebSocketFactory: Promise<ConnectWebSocketFactory | null> | null = null;
+
+export function loadConnectWebSocket(): Promise<ConnectWebSocketFactory | null> {
+  nodeWebSocketFactory ??= import(WS_MODULE)
+    .then((mod: { WebSocket?: unknown; default?: unknown }) => {
+      const ctor = (mod.WebSocket ?? mod.default) as NodeWebSocketConstructor | undefined;
+      if (typeof ctor !== 'function') return null;
+      const factory: ConnectWebSocketFactory = (url, _protocols, options) =>
+        new ctor(url, { headers: { ...(options?.headers ?? {}) } });
+      return factory;
+    })
+    .catch(() => null);
+  return nodeWebSocketFactory;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -206,10 +213,13 @@ function stripPartyPrefix(conversationId: string | null): string | null {
 
 export class ConnectClient extends TypedEmitter<ConnectEventMap> {
   private readonly options: ConnectClientOptions;
-  private readonly factory: ConnectWebSocketFactory;
+  private factory: ConnectWebSocketFactory | null;
   private readonly url: string;
   private readonly connectionTimeoutMs: number;
   private readonly autoReconnect: boolean;
+  private readonly reconnectInitialDelayMs: number;
+  private readonly reconnectMaxDelayMs: number;
+  private readonly maxReconnectAttempts: number;
 
   private socket: WebSocketLike | null = null;
   private currentState: ConnectState = 'idle';
@@ -219,8 +229,12 @@ export class ConnectClient extends TypedEmitter<ConnectEventMap> {
 
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
+  private everConnected = false;
+  private manualDisconnect = false;
 
-  private connectPromise: Promise<void> | null = null;
+  private pendingConnect: Promise<void> | null = null;
   private connectResolve: (() => void) | null = null;
   private connectReject: ((error: Error) => void) | null = null;
 
@@ -233,17 +247,13 @@ export class ConnectClient extends TypedEmitter<ConnectEventMap> {
       throw new ValidationError('A connect client requires a getAccessToken function.', 'getAccessToken');
     }
     this.options = options;
-    const factory = resolveConnectWebSocketFactory(options.webSocket);
-    if ((factory as BrandedFactory)[HEADERLESS_FACTORY]) {
-      throw new ConfigurationError(
-        'The connect (EOS) stream requires a WebSocket that can send an Authorization header, which browser and global WebSocket implementations cannot. Pass a `webSocket` factory backed by the "ws" package (Node and Electron main) or the Tauri websocket plugin. Live friend presence is still available without a socket through session.friendPresences().',
-        'webSocket',
-      );
-    }
-    this.factory = factory;
+    this.factory = options.webSocket ?? null;
     this.url = options.url ?? CONNECT_WEBSOCKET_URL;
     this.connectionTimeoutMs = options.connectionTimeoutMs ?? 15_000;
     this.autoReconnect = options.autoReconnect ?? true;
+    this.reconnectInitialDelayMs = options.reconnectInitialDelayMs ?? 1_000;
+    this.reconnectMaxDelayMs = options.reconnectMaxDelayMs ?? 30_000;
+    this.maxReconnectAttempts = options.maxReconnectAttempts ?? 0;
   }
 
   get state(): ConnectState {
@@ -270,10 +280,52 @@ export class ConnectClient extends TypedEmitter<ConnectEventMap> {
     return this.presenceCache.get(accountId) ?? null;
   }
 
-  async connect(): Promise<void> {
-    if (this.currentState === 'connected') return;
-    if (this.connectPromise) return this.connectPromise;
+  connect(): Promise<void> {
+    if (this.currentState === 'connected') return Promise.resolve();
+    this.manualDisconnect = false;
+    this.clearReconnect();
+    this.pendingConnect ??= this.openSession().finally(() => {
+      this.pendingConnect = null;
+    });
+    return this.pendingConnect;
+  }
 
+  reconnect(): Promise<void> {
+    if (this.currentState === 'connected') this.dropSocket(4000, 'reconnect requested');
+    return this.connect();
+  }
+
+  async disconnect(): Promise<void> {
+    this.manualDisconnect = true;
+    this.clearReconnect();
+    if (this.currentState === 'idle' || this.currentState === 'closed') {
+      this.teardownTimers();
+      return;
+    }
+    this.currentState = 'closing';
+    try {
+      this.socket?.close(1000, 'client disconnect');
+    } catch {
+      // teardown best-effort
+    }
+    this.handleClose(1000, 'client disconnect');
+  }
+
+  private async resolveFactory(): Promise<ConnectWebSocketFactory> {
+    if (this.factory) return this.factory;
+    const loaded = await loadConnectWebSocket();
+    if (!loaded) {
+      throw new ConfigurationError(
+        'The connect (EOS) stream needs a WebSocket that can send an Authorization header. Install the "ws" package (it is picked up automatically) or pass a `webSocket` factory, for example one backed by the Tauri websocket plugin.',
+        'webSocket',
+      );
+    }
+    this.factory = loaded;
+    return loaded;
+  }
+
+  private async openSession(): Promise<void> {
+    const factory = await this.resolveFactory();
     const token = await this.options.getAccessToken();
     if (typeof token !== 'string' || token.length === 0) {
       throw new ValidationError('getAccessToken returned an empty access token.', 'getAccessToken');
@@ -283,14 +335,14 @@ export class ConnectClient extends TypedEmitter<ConnectEventMap> {
     this.connectionId = null;
     this.heartbeatStarted = false;
 
-    this.connectPromise = new Promise<void>((resolve, reject) => {
+    const established = new Promise<void>((resolve, reject) => {
       this.connectResolve = resolve;
       this.connectReject = reject;
     });
 
     let socket: WebSocketLike;
     try {
-      socket = this.factory(this.url, CONNECT_SEC_PROTOCOLS.split(','), {
+      socket = factory(this.url, undefined, {
         headers: {
           Authorization: `Bearer ${token}`,
           'Epic-Connect-Protocol': 'stomp',
@@ -310,33 +362,36 @@ export class ConnectClient extends TypedEmitter<ConnectEventMap> {
     }, this.connectionTimeoutMs);
 
     socket.addEventListener('open', () => {
-      this.sendRaw(`CONNECT\nheart-beat:30000,0\naccept-version:1.0,1.1,1.2\n\n${NUL}`);
+      if (this.socket !== socket) return;
+      this.sendSafely(`CONNECT\nheart-beat:30000,0\naccept-version:1.0,1.1,1.2\n\n${NUL}`);
     });
     socket.addEventListener('message', (event: { data: unknown }) => {
+      if (this.socket !== socket) return;
       this.handleIncoming(event.data);
     });
     socket.addEventListener('close', (event: { code?: number; reason?: string }) => {
+      if (this.socket !== socket) return;
       this.handleClose(event.code ?? 1006, event.reason ?? '');
     });
     socket.addEventListener('error', () => {
+      if (this.socket !== socket) return;
       this.emit('error', new Error('The connect WebSocket reported an error.'));
     });
 
-    return this.connectPromise;
+    return established;
   }
 
-  async disconnect(): Promise<void> {
-    if (this.currentState === 'idle' || this.currentState === 'closed') {
-      this.teardownTimers();
-      return;
-    }
-    this.currentState = 'closing';
+  private sendSafely(data: string): void {
     try {
-      this.socket?.close(1000, 'client disconnect');
-    } catch {
-      // teardown best-effort
+      this.sendRaw(data);
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      if (this.connectReject) {
+        this.failConnect(failure);
+      } else {
+        this.dropSocket(1006, failure.message);
+      }
     }
-    this.handleClose(1000, 'client disconnect');
   }
 
   private sendRaw(data: string): void {
@@ -400,7 +455,7 @@ export class ConnectClient extends TypedEmitter<ConnectEventMap> {
 
     if (command === 'CONNECTED') {
       this.startHeartbeat(headers['heart-beat']);
-      this.sendRaw(`SUBSCRIBE\nid:0\ndestination:launcher\n\n${NUL}`);
+      this.sendSafely(`SUBSCRIBE\nid:0\ndestination:launcher\n\n${NUL}`);
       return;
     }
 
@@ -507,6 +562,8 @@ export class ConnectClient extends TypedEmitter<ConnectEventMap> {
     this.connectionId = connectionId || this.connectionId;
     if (this.currentState !== 'connected') {
       this.currentState = 'connected';
+      this.everConnected = true;
+      this.reconnectAttempts = 0;
       if (this.connectTimer) {
         clearTimeout(this.connectTimer);
         this.connectTimer = null;
@@ -514,7 +571,6 @@ export class ConnectClient extends TypedEmitter<ConnectEventMap> {
       const resolve = this.connectResolve;
       this.connectResolve = null;
       this.connectReject = null;
-      this.connectPromise = null;
       this.emit('connected', { connectionId: this.connectionId ?? '' });
       resolve?.();
     }
@@ -530,19 +586,54 @@ export class ConnectClient extends TypedEmitter<ConnectEventMap> {
       await this.disconnect();
       return;
     }
+    const previous = this.socket;
+    this.socket = null;
     try {
-      this.socket?.close(1000, 'restart');
+      previous?.close(1000, 'restart');
     } catch {
       // ignore
     }
-    this.socket = null;
     this.teardownTimers();
     this.currentState = 'idle';
+    this.connectionId = null;
     this.heartbeatStarted = false;
     try {
       await this.connect();
     } catch (error) {
       this.emit('error', error instanceof Error ? error : new Error(String(error)));
+      this.maybeReconnect();
+    }
+  }
+
+  private maybeReconnect(): void {
+    if (!this.autoReconnect || this.manualDisconnect || !this.everConnected) return;
+    if (this.reconnectTimer || this.pendingConnect || this.currentState === 'connected') return;
+    if (this.maxReconnectAttempts > 0 && this.reconnectAttempts >= this.maxReconnectAttempts) {
+      this.emit('error', new ConfigurationError('Exhausted connect reconnect attempts.', 'maxReconnectAttempts'));
+      return;
+    }
+
+    const attempt = this.reconnectAttempts + 1;
+    const delay = Math.min(this.reconnectMaxDelayMs, this.reconnectInitialDelayMs * 2 ** this.reconnectAttempts);
+    this.reconnectAttempts = attempt;
+    this.emit('reconnecting', { attempt, delay });
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.manualDisconnect) return;
+      this.connect().catch((error: unknown) => {
+        this.emit('error', error instanceof Error ? error : new Error(String(error)));
+        this.maybeReconnect();
+      });
+    }, delay);
+    const timer = this.reconnectTimer as { unref?: () => void };
+    if (typeof timer.unref === 'function') timer.unref();
+  }
+
+  private clearReconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
   }
 
@@ -557,16 +648,17 @@ export class ConnectClient extends TypedEmitter<ConnectEventMap> {
     const reject = this.connectReject;
     this.connectResolve = null;
     this.connectReject = null;
-    this.connectPromise = null;
     if (this.connectTimer) {
       clearTimeout(this.connectTimer);
       this.connectTimer = null;
     }
     this.teardownTimers();
+    const socket = this.socket;
+    this.socket = null;
     if (this.currentState !== 'closed') {
       this.currentState = 'closed';
       try {
-        this.socket?.close(1000, 'connect failed');
+        socket?.close(1000, 'connect failed');
       } catch {
         // ignore
       }
@@ -576,6 +668,17 @@ export class ConnectClient extends TypedEmitter<ConnectEventMap> {
     } else {
       this.emit('error', error);
     }
+  }
+
+  private dropSocket(code: number, reason: string): void {
+    const socket = this.socket;
+    this.socket = null;
+    try {
+      socket?.close(1000, reason);
+    } catch {
+      // the socket is already unusable
+    }
+    this.handleClose(code, reason);
   }
 
   private handleClose(code: number, reason: string): void {
@@ -596,5 +699,6 @@ export class ConnectClient extends TypedEmitter<ConnectEventMap> {
       return;
     }
     this.emit('disconnected', { code, reason });
+    this.maybeReconnect();
   }
 }

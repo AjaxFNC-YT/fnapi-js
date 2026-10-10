@@ -20,6 +20,14 @@ import { FnccMnemonicEndpoint } from './endpoints/mnemonic.js';
 import { FnccNewsEndpoint } from './endpoints/news.js';
 import { FnccPlaylistsEndpoint } from './endpoints/playlists.js';
 import { FnccWeaponsEndpoint } from './endpoints/weapons.js';
+import { FnccRaritiesEndpoint } from './endpoints/rarities.js';
+import { FnccLootPoolEndpoint } from './endpoints/lootpool.js';
+import { FnccSeasonsEndpoint } from './endpoints/seasons.js';
+import { FnccBattlePassesEndpoint } from './endpoints/battlepasses.js';
+import { FnccBundlesEndpoint } from './endpoints/bundles.js';
+import { FnccModesEndpoint } from './endpoints/modes.js';
+import { FnccShortenEndpoint } from './endpoints/shorten.js';
+import { FnccQuestsEndpoint } from './endpoints/quests.js';
 
 export class FnccAPI {
   public readonly rest: RestClient;
@@ -43,6 +51,14 @@ export class FnccAPI {
   public readonly news: FnccNewsEndpoint;
   public readonly playlists: FnccPlaylistsEndpoint;
   public readonly weapons: FnccWeaponsEndpoint;
+  public readonly rarities: FnccRaritiesEndpoint;
+  public readonly lootpool: FnccLootPoolEndpoint;
+  public readonly seasons: FnccSeasonsEndpoint;
+  public readonly battlepasses: FnccBattlePassesEndpoint;
+  public readonly bundles: FnccBundlesEndpoint;
+  public readonly modes: FnccModesEndpoint;
+  public readonly shorten: FnccShortenEndpoint;
+  public readonly quests: FnccQuestsEndpoint;
 
   constructor(options: FnccAPIOptions = {}) {
     this.rest = new RestClient({
@@ -75,6 +91,14 @@ export class FnccAPI {
     this.news = new FnccNewsEndpoint(this.rest);
     this.playlists = new FnccPlaylistsEndpoint(this.rest);
     this.weapons = new FnccWeaponsEndpoint(this.rest);
+    this.rarities = new FnccRaritiesEndpoint(this.rest);
+    this.lootpool = new FnccLootPoolEndpoint(this.rest);
+    this.seasons = new FnccSeasonsEndpoint(this.rest);
+    this.battlepasses = new FnccBattlePassesEndpoint(this.rest);
+    this.bundles = new FnccBundlesEndpoint(this.rest);
+    this.modes = new FnccModesEndpoint(this.rest);
+    this.shorten = new FnccShortenEndpoint(this.rest);
+    this.quests = new FnccQuestsEndpoint(this.rest);
   }
 
   version(...args: Parameters<FnccGameEndpoint['version']>) {

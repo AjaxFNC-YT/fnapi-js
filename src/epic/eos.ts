@@ -33,6 +33,7 @@ export interface LockerItemCustomization {
 export interface LockerLoadoutSlot {
   slotTemplate: string;
   equippedItemId?: string;
+  resolvedEquippedItemId?: string;
   itemCustomizations?: LockerItemCustomization[];
 }
 
@@ -45,16 +46,83 @@ export interface LockerActiveLoadoutGroup {
   deploymentId?: string;
   accountId?: string;
   athenaItemId?: string;
+  namespace?: string;
   creationTime?: string;
   updatedTime?: string;
   loadouts: Record<string, LockerSchemaLoadout>;
   shuffleType?: string;
+  equippedPresetId?: string;
+  equippedPresetItemId?: string;
+}
+
+export interface LockerLoadoutGroupPreset {
+  accountId: string;
+  athenaItemId: string;
+  deploymentId: string;
+  namespace?: string;
+  presetId: string;
+  displayName: string;
+  presetFavoriteStatus?: string;
+  loadouts: Record<string, LockerSchemaLoadout>;
+  creationTime?: string;
+  updatedTime?: string;
+}
+
+export interface LockerLoadoutPreset {
+  accountId: string;
+  athenaItemId: string;
+  deploymentId: string;
+  namespace?: string;
+  presetId: string;
+  presetIndex: number;
+  displayName?: string;
+  loadoutType: string;
+  loadoutSlots: LockerLoadoutSlot[];
+  creationTime?: string;
+  updatedTime?: string;
 }
 
 export interface LockerItemsResponse {
   activeLoadoutGroup?: LockerActiveLoadoutGroup;
-  loadoutGroupPresets?: unknown[];
-  loadoutPresets?: unknown[];
+  loadoutGroupPresets?: LockerLoadoutGroupPreset[];
+  loadoutPresets?: LockerLoadoutPreset[];
+}
+
+export interface LockerVariantTag {
+  variantTag: string;
+  additionalData?: string;
+}
+
+export interface LockerCosmeticData {
+  templateId: string;
+  cosmeticItemId: string;
+  athenaItemId: string;
+  activeVariants: Record<string, LockerVariantTag>;
+  ownedVariants?: Record<string, LockerVariantTag[]>;
+  itemSeenStatus?: string;
+  favoriteStatus?: string;
+  lockedIn?: boolean;
+  creationTime?: string;
+  updatedTime?: string;
+}
+
+export interface LockerCosmeticDataPage {
+  cosmeticItems: LockerCosmeticData[];
+  cosmeticItemAccessTokens: unknown[];
+  requestTime?: string;
+  nextToken?: string;
+}
+
+export interface LockerCosmeticDataOptions extends EosTokenOptions {
+  limit?: number;
+  nextToken?: string;
+}
+
+export interface LockerGroupPresetInput {
+  displayName: string;
+  loadouts: Record<string, LockerSchemaLoadout>;
+  athenaItemId?: string;
+  creationTime?: string;
 }
 
 export interface EosTokenOptions {
@@ -209,19 +277,138 @@ export class EosConnectManager {
 export class LockerService {
   constructor(private readonly rest: EpicRestClient) {}
 
-  async items(eosAccessToken: string, accountId: string, options: EosTokenOptions = {}): Promise<LockerItemsResponse> {
-    if (typeof eosAccessToken !== 'string' || eosAccessToken.length === 0) {
-      throw new ValidationError('"eosAccessToken" is required', 'eosAccessToken');
+  items(eosAccessToken: string, accountId: string, options: EosTokenOptions = {}): Promise<LockerItemsResponse> {
+    return this.call<LockerItemsResponse>('GET', eosAccessToken, accountId, 'items', options);
+  }
+
+  cosmeticData(
+    eosAccessToken: string,
+    accountId: string,
+    options: LockerCosmeticDataOptions = {},
+  ): Promise<LockerCosmeticDataPage> {
+    if (options.limit !== undefined && (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 100)) {
+      throw new ValidationError('"limit" must be an integer between 1 and 100', 'limit');
     }
-    if (typeof accountId !== 'string' || accountId.length === 0) {
-      throw new ValidationError('"accountId" is required', 'accountId');
+    return this.call<LockerCosmeticDataPage>('GET', eosAccessToken, accountId, 'cosmetic-data', options, {
+      query: { limit: options.limit, nextToken: options.nextToken },
+    });
+  }
+
+  async allCosmeticData(
+    eosAccessToken: string,
+    accountId: string,
+    options: EosTokenOptions = {},
+  ): Promise<LockerCosmeticData[]> {
+    const items: LockerCosmeticData[] = [];
+    let nextToken: string | undefined;
+    do {
+      const page = await this.cosmeticData(eosAccessToken, accountId, { ...options, ...(nextToken ? { nextToken } : {}) });
+      items.push(...page.cosmeticItems);
+      nextToken = page.nextToken || undefined;
+    } while (nextToken);
+    return items;
+  }
+
+  setActiveLoadoutGroup(
+    eosAccessToken: string,
+    accountId: string,
+    group: Pick<LockerActiveLoadoutGroup, 'loadouts' | 'equippedPresetId' | 'equippedPresetItemId'>,
+    options: EosTokenOptions = {},
+  ): Promise<LockerActiveLoadoutGroup> {
+    if (!group || typeof group.loadouts !== 'object' || group.loadouts === null) {
+      throw new ValidationError('"loadouts" is required', 'loadouts');
     }
+    return this.call<LockerActiveLoadoutGroup>('PUT', eosAccessToken, accountId, 'active-loadout-group', options, {
+      json: group,
+    });
+  }
+
+  putLoadoutGroupPreset(
+    eosAccessToken: string,
+    accountId: string,
+    presetId: string,
+    preset: LockerGroupPresetInput,
+    options: EosTokenOptions = {},
+  ): Promise<LockerLoadoutGroupPreset> {
+    requireString(presetId, 'presetId');
+    requireString(preset?.displayName, 'displayName');
+    return this.call<LockerLoadoutGroupPreset>('PUT', eosAccessToken, accountId, groupPresetPath(presetId), options, {
+      json: preset,
+    });
+  }
+
+  updateLoadoutGroupPreset(
+    eosAccessToken: string,
+    accountId: string,
+    presetId: string,
+    preset: Pick<LockerGroupPresetInput, 'displayName' | 'loadouts'>,
+    options: EosTokenOptions = {},
+  ): Promise<LockerLoadoutGroupPreset> {
+    requireString(presetId, 'presetId');
+    requireString(preset?.displayName, 'displayName');
+    return this.call<LockerLoadoutGroupPreset>('PATCH', eosAccessToken, accountId, groupPresetPath(presetId), options, {
+      json: { displayName: preset.displayName, loadouts: preset.loadouts },
+    });
+  }
+
+  deleteLoadoutGroupPreset(
+    eosAccessToken: string,
+    accountId: string,
+    presetId: string,
+    options: EosTokenOptions = {},
+  ): Promise<LockerLoadoutGroupPreset> {
+    requireString(presetId, 'presetId');
+    return this.call<LockerLoadoutGroupPreset>('DELETE', eosAccessToken, accountId, groupPresetPath(presetId), options);
+  }
+
+  async setCompanionName(
+    eosAccessToken: string,
+    accountId: string,
+    cosmeticItemId: string,
+    companionName: string,
+    options: EosTokenOptions = {},
+  ): Promise<void> {
+    requireString(cosmeticItemId, 'cosmeticItemId');
+    requireString(companionName, 'companionName');
+    await this.call<unknown>('PATCH', eosAccessToken, accountId, 'companion-name', options, {
+      json: { cosmeticItemId, companionName },
+    });
+  }
+
+  async lockInImmutableItem(
+    eosAccessToken: string,
+    accountId: string,
+    itemIdentifier: string,
+    variants: Record<string, LockerVariantTag>,
+    options: EosTokenOptions = {},
+  ): Promise<void> {
+    requireString(itemIdentifier, 'itemIdentifier');
+    const path = `lock-in-immutable-item/${encodeURIComponent(itemIdentifier)}`;
+    await this.call<unknown>('POST', eosAccessToken, accountId, path, options, { json: { variants } });
+  }
+
+  private async call<T>(
+    method: 'GET' | 'PUT' | 'PATCH' | 'POST' | 'DELETE',
+    eosAccessToken: string,
+    accountId: string,
+    path: string,
+    options: EosTokenOptions,
+    extra: { json?: unknown; query?: Record<string, string | number | undefined> } = {},
+  ): Promise<T> {
+    requireString(eosAccessToken, 'eosAccessToken');
+    requireString(accountId, 'accountId');
     const deploymentId = options.deploymentId ?? FN_LIVE_DEPLOYMENT_ID;
-    const path = `/api/locker/v4/${encodeURIComponent(deploymentId)}/account/${encodeURIComponent(accountId)}/items`;
-    const response = await this.rest.request<LockerItemsResponse>('GET', path, {
+    const url = `/api/locker/v4/${encodeURIComponent(deploymentId)}/account/${encodeURIComponent(accountId)}/${path}`;
+    const response = await this.rest.request<T>(method, url, {
       bearer: eosAccessToken,
+      ...(extra.json !== undefined ? { json: extra.json } : {}),
+      ...(extra.query ? { query: extra.query } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     });
     return response.data;
   }
+}
+
+function groupPresetPath(presetId: string): string {
+  return `loadout-group-preset/id/${encodeURIComponent(presetId)}`;
 }

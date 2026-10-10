@@ -30,11 +30,19 @@ import { STATS_PROXY_BASE_URL, StatsProxyManager } from './stats.js';
 import { USER_SEARCH_BASE_URL, UserSearchManager } from './userSearch.js';
 import { AVATAR_BASE_URL, AvatarManager } from './avatar.js';
 import type { AvatarImageResolver } from './avatar.js';
+import type { ConnectWebSocketFactory } from './connect.js';
 import { CloudStorageManager } from './cloudstorage.js';
 import { MatchmakingManager } from './matchmaking.js';
 import { PLAYTIME_BASE_URL, PlaytimeManager } from './playtime.js';
 import { LAUNCHER_LIBRARY_BASE_URL, LIBRARY_BASE_URL, LibraryManager } from './library.js';
 import { STATUS_BASE_URL, EpicStatusManager } from './status.js';
+import { CONTENT_PAGES_BASE_URL, ContentPagesManager } from './content.js';
+import { CONTENT_SERVICE_BASE_URL, ContentServiceManager } from './contentService.js';
+import { LauncherManager } from './launcher.js';
+import { MOTD_BASE_URL, MotdManager } from './motd.js';
+import { EVENTS_BASE_URL, EventsManager } from './events.js';
+import { DISCOVERY_BASE_URL, LINKS_BASE_URL, LinksManager } from './links.js';
+import { QUEST_SERVICE_BASE_URL, QuestService } from './quests.js';
 import { EpicRestClient, type EpicRestOptions } from './rest.js';
 import { EpicAuthSession } from './session.js';
 import type { DeviceAuthCredentials, OAuthToken } from './types.js';
@@ -49,6 +57,7 @@ export interface EpicClientOptions extends EpicRestOptions {
   allowCustomClients?: boolean;
   allowCustomMcpOperations?: boolean;
   avatarImageResolver?: AvatarImageResolver;
+  connectWebSocket?: ConnectWebSocketFactory;
 }
 
 export class EpicGamesClient {
@@ -72,6 +81,13 @@ export class EpicGamesClient {
   public readonly libraryRest: EpicRestClient;
   public readonly launcherLibraryRest: EpicRestClient;
   public readonly statusRest: EpicRestClient;
+  public readonly contentPagesRest: EpicRestClient;
+  public readonly motdRest: EpicRestClient;
+  public readonly contentServiceRest: EpicRestClient;
+  public readonly eventsRest: EpicRestClient;
+  public readonly linksRest: EpicRestClient;
+  public readonly discoveryRest: EpicRestClient;
+  public readonly questRest: EpicRestClient;
   public readonly auth: AuthManager;
   public readonly deviceAuths: DeviceAuthManager;
   public readonly accounts: AccountManager;
@@ -95,9 +111,17 @@ export class EpicGamesClient {
   public readonly playtime: PlaytimeManager;
   public readonly library: LibraryManager;
   public readonly status: EpicStatusManager;
+  public readonly content: ContentPagesManager;
+  public readonly motd: MotdManager;
+  public readonly contentService: ContentServiceManager;
+  public readonly launcher: LauncherManager;
+  public readonly events: EventsManager;
+  public readonly links: LinksManager;
+  public readonly quests: QuestService;
 
   private readonly defaultClient: AuthClient;
   private readonly allowCustomClients: boolean;
+  private readonly connectWebSocket: ConnectWebSocketFactory | undefined;
 
   constructor(options: EpicClientOptions = {}) {
     const {
@@ -105,9 +129,11 @@ export class EpicGamesClient {
       allowCustomClients,
       allowCustomMcpOperations,
       avatarImageResolver,
+      connectWebSocket,
       ...restOptions
     } = options;
     this.allowCustomClients = allowCustomClients ?? false;
+    this.connectWebSocket = connectWebSocket;
     this.rest = new EpicRestClient(restOptions);
     this.mcpRest = new EpicRestClient({ ...restOptions, baseUrl: MCP_BASE_URL });
     this.partyRest = new EpicRestClient({ ...restOptions, baseUrl: PARTY_BASE_URL });
@@ -127,6 +153,13 @@ export class EpicGamesClient {
     this.libraryRest = new EpicRestClient({ ...restOptions, baseUrl: LIBRARY_BASE_URL });
     this.launcherLibraryRest = new EpicRestClient({ ...restOptions, baseUrl: LAUNCHER_LIBRARY_BASE_URL });
     this.statusRest = new EpicRestClient({ ...restOptions, baseUrl: STATUS_BASE_URL });
+    this.contentPagesRest = new EpicRestClient({ ...restOptions, baseUrl: CONTENT_PAGES_BASE_URL });
+    this.motdRest = new EpicRestClient({ ...restOptions, baseUrl: MOTD_BASE_URL });
+    this.contentServiceRest = new EpicRestClient({ ...restOptions, baseUrl: CONTENT_SERVICE_BASE_URL });
+    this.eventsRest = new EpicRestClient({ ...restOptions, baseUrl: EVENTS_BASE_URL });
+    this.linksRest = new EpicRestClient({ ...restOptions, baseUrl: LINKS_BASE_URL });
+    this.discoveryRest = new EpicRestClient({ ...restOptions, baseUrl: DISCOVERY_BASE_URL });
+    this.questRest = new EpicRestClient({ ...restOptions, baseUrl: QUEST_SERVICE_BASE_URL });
     this.ecosystemRest = new RestClient({
       baseUrl: ECOSYSTEM_BASE_URL,
       timeout: restOptions.timeout,
@@ -161,6 +194,13 @@ export class EpicGamesClient {
     this.playtime = new PlaytimeManager(this.playtimeRest);
     this.library = new LibraryManager(this.libraryRest, this.launcherLibraryRest);
     this.status = new EpicStatusManager(this.statusRest);
+    this.content = new ContentPagesManager(this.contentPagesRest);
+    this.motd = new MotdManager(this.motdRest);
+    this.contentService = new ContentServiceManager(this.contentServiceRest);
+    this.launcher = new LauncherManager(this.launcherLibraryRest);
+    this.events = new EventsManager(this.eventsRest);
+    this.links = new LinksManager(this.linksRest, this.discoveryRest);
+    this.quests = new QuestService(this.questRest);
     this.defaultClient = resolveAuthClient(defaultClient ?? AuthClients.fortniteAndroid);
   }
 
@@ -200,9 +240,17 @@ export class EpicGamesClient {
       playtime: this.playtime,
       library: this.library,
       status: this.status,
+      motd: this.motd,
+      contentService: this.contentService,
+      launcher: this.launcher,
+      events: this.events,
+      links: this.links,
+      quests: this.quests,
+      content: this.content,
       client: this.client(client),
       token,
       allowCustomClients: this.allowCustomClients,
+      ...(this.connectWebSocket ? { connectWebSocket: this.connectWebSocket } : {}),
     });
   }
 

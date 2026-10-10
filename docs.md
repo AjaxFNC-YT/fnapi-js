@@ -602,6 +602,8 @@ const ct = res.header('content-type');
 
 ## `MemoryCache`
 
+A single call can opt in even when the client cache is off: `cache: { ttl: 300_000 }` stores that response for five minutes, and `cache: true` uses the client default. Identical GETs that are already in flight share one request regardless of caching, so ten concurrent `fncc.playlists.list()` calls hit the network once.
+
 When caching is enabled, GET responses are stored in an LRU `MemoryCache` reachable at `client.rest.cache`. It is bounded by `maxEntries` (evicting the oldest entry) and each entry expires after its `ttl`. Cached hits are returned as fresh `ApiResponse` objects with `cached === true` and a deep-cloned body, so mutating a result never corrupts the cache. Useful methods: `get`, `has`, `set`, `delete`, `clear`, `prune`, and the `size` getter.
 
 ---
@@ -2584,13 +2586,15 @@ The high-level Epic Games account-service auth client. Wires together a `RestCli
 class EpicGamesClient { constructor(options?: EpicClientOptions) }
 ```
 
-Constructs the client. `EpicClientOptions` extends `EpicRestOptions` — pass `defaultClient` to set the auth client used when a method omits one (defaults to `AuthClients.fortnitePC`), plus transport options `baseUrl`, `timeout`, `retry`, `userAgent`, `fetch`, and `headers`.
+Constructs the client. `EpicClientOptions` extends `EpicRestOptions` — pass `defaultClient` to set the auth client used when a method omits one (defaults to `AuthClients.fortniteAndroid`), plus transport options `baseUrl`, `timeout`, `retry`, `userAgent`, `fetch`, and `headers`.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `options.defaultClient` | `AuthClientInput` | Default auth client for calls that don't specify one. Accepts an `AuthClient`, a registry name like `'fortnitePC'`, or a raw client id string. Defaults to `AuthClients.fortnitePC`. |
+| `options.defaultClient` | `AuthClientInput` | Default auth client for calls that don't specify one. Accepts an `AuthClient`, a registry name like `'fortnitePC'`, or a raw client id string. Defaults to `AuthClients.fortniteAndroid`. |
 | `options.timeout` | `number` | Per-request timeout in milliseconds. |
-| `options.retry` | `number` | Retry attempts for failed requests. |
+| `options.retry` | `number` | Total attempts per request (default `3`). GET / PUT / DELETE retry on 429 and 5xx and on network errors; POST / PATCH retry only on 429 so a gift or purchase is never sent twice. `Retry-After` is honoured up to 30s. Token grants for `device_auth` / `client_credentials` and the read-only MCP `QueryProfile` / `QueryPublicProfile` are treated as replayable. |
+| `options.cache` (per request) | `boolean \| { ttl }` | Not a constructor option: GET-backed methods across the package accept `cache: true` (60s) or `cache: { ttl }` to keep that response in memory. Identical GETs that are in flight at the same time always share one request, keyed per token. `session.matchmakingNetCL({ cache: { ttl } })` caches the netCL lookup the same way. |
+| `options.connectWebSocket` | `ConnectWebSocketFactory` | Header-capable WebSocket factory used by every session's connect stream. Optional on Node — the `ws` package is loaded automatically. |
 | `options.baseUrl` | `string` | Override the Epic account-service base URL. |
 | `options.fetch` | `FetchLike` | Custom fetch implementation. |
 | `options.headers` | `Record<string, string>` | Extra default headers sent on every request. |
@@ -3519,7 +3523,7 @@ Mints an **Epic Account Services (EAS)** token via `POST /epic/oauth/v2/token` (
 lockerItems(options?: { deploymentId?: string; signal?: AbortSignal }): Promise<LockerItemsResponse>
 ```
 
-Reads the raw **EOS Locker Service** `locker/v4` items — the `activeLoadoutGroup` (equipped character, emotes, vehicle, jam, …) and saved presets. [`Locker`](/epic/locker) uses this under the hood to fill the equipped loadout for migrated accounts; call it directly if you want the raw group.
+Reads the raw **EOS Locker Service** `locker/v4` items — the `activeLoadoutGroup` (equipped character, emotes, vehicle, jam, …), saved `loadoutGroupPresets` and per-section `loadoutPresets`. [`Locker`](/epic/locker) is built on this and the other locker calls (`lockerCosmetics`, `setActiveLoadoutGroup`, the preset calls, `setCompanionName`, `lockInImmutableItem`); call them directly if you want the raw data.
 
 **Returns:** `Promise<LockerItemsResponse>`
 
@@ -3575,11 +3579,11 @@ console.log(status.status, entry?.last_online);
 <Badge type="info" text="method" />
 
 ```ts
-setCustomStatus(status: string, options?: { onlineType?: string; signal?: AbortSignal }): Promise<void>
-clearCustomStatus(options?: { signal?: AbortSignal }): Promise<void>
+setCustomStatus(status: string, options?: { onlineType?: string; signal?: AbortSignal }): Promise<EosOwnPresence | null>
+clearCustomStatus(options?: { signal?: AbortSignal }): Promise<EosOwnPresence | null>
 ```
 
-Publish the friend-facing status that modern Fortnite renders **in-game** (the line that otherwise reads *"In the launcher"*). This runs over **EOS presence**, not XMPP — the text is sent as `activity.value` on a presence `PATCH` bound to your live connect session, so it opens (or reuses) `connectEvents` for you and holds only while that session stays open. It re-applies on reconnect; `clearCustomStatus`, `disconnectEvents`, or `logout` removes it. See [live events & presence](/epic/chat#in-game-custom-status).
+Publish the friend-facing status that modern Fortnite renders **in-game** (the line that otherwise reads *"In the launcher"*). This runs over **EOS presence**, not XMPP — the text is sent as `activity.value` on a presence `PATCH` bound to your live connect session, so it opens (or reuses) `connectEvents` for you and holds only while that session stays open. No WebSocket setup is needed on Node — the `ws` package is picked up automatically. Both calls resolve to the presence Epic stored. The status is re-applied on every reconnect and recovered when Epic reports the connection gone; `clearCustomStatus`, `disconnectEvents`, or `logout` removes it. See [live events & presence](/epic/chat#in-game-custom-status).
 
 ```ts
 await session.setCustomStatus('Playing with fnapi-js 🚀');
@@ -3632,6 +3636,37 @@ console.log('v-bucks:', balance.total, 'on', balance.platform);
 await session.setMtxPlatform('PSN');
 const stats = await session.userStats();
 ```
+
+## Account actions
+<Badge type="info" text="method" />
+
+```ts
+supportACreator(): Promise<{ code: string; setAt: string | null; affiliateId: string | null } | null>
+setSupportACreator(code: string): Promise<MCPResponse>
+claimMfaReward(options?: { stw?: boolean }): Promise<MCPResponse>
+markBansViewed(): Promise<MCPResponse>
+skipTutorial(): Promise<MCPResponse>
+giftEligibility(recipientId: string, offerId: string): Promise<GiftEligibilityResponse>
+```
+
+| Method | Description |
+| --- | --- |
+| `supportACreator` / `setSupportACreator` | Read or set the Support-a-Creator code (`SetAffiliateName`). An unknown code throws a `ShopError` with reason `invalid-creator`. |
+| `claimMfaReward` | Claim the two-factor reward (`ClaimMfaEnabled`); pass `stw: true` for the Save the World version. |
+| `markBansViewed` | Acknowledge matchmaking ban notices (`SetMatchmakingBansViewed`). |
+| `skipTutorial` | Skip the Save the World tutorial (`SkipTutorial` on `campaign`). |
+| `giftEligibility` | The raw gift check behind `checkGift`. |
+
+Purchases, refunds and purchase history are covered in [Shop & Gifting](/epic/shop#purchases-refunds).
+
+## Tournaments, islands, quests & locker
+
+These session methods have their own pages:
+
+- [Tournaments](/epic/tournaments): `tournaments`, `tournamentLeaderboard`, `tournamentScores`, `tournamentHistory`, `tournamentPlayer`, `tournamentTokens`, `tournamentData`
+- [Islands & Links](/epic/links): `island`, `islands`, `islandRelated`, `islandVersions`, `creatorIslands`, `myIslands`
+- [Quests](/epic/quests): `questProgress`, `questLogin`, `claimQuestReward`, `rerollDailyQuest`, `trackQuests`, `pinStwQuests`
+- [Locker](/epic/locker#raw-session-calls): `lockerCosmetics`, `setActiveLoadoutGroup`, the preset calls, `setCompanionName`, `lockInImmutableItem`
 
 ## Cloud storage
 <Badge type="info" text="method" />
@@ -3710,9 +3745,19 @@ resolveAvatar(accountId?: string, options?: AvatarResolveOptions): Promise<Resol
 
 Read the KWS/Epic **avatar** (the account's chosen Fortnite icon) for one or many accounts. `avatar`/`avatars` return the raw `namespace:id` reference; the `resolve*` variants additionally resolve the id into its `characterId` and a rendered `iconUrl`. `avatar`/`resolveAvatar` default to the signed-in account and return `null` when none is set.
 
+Two sources are supported: `fncc` (**fn-api.cc**, the default) and `fortnite-api` (**fortnite-api.com**). Pick one per call with `options.source`; the resolved value also carries every source's URL in `iconUrls` so you can fall back client-side. `options.size` is `smallicon` (default), `icon`, or `featured` — `fncc` serves the character icon only, never a full render.
+
+When you construct the SDK through the umbrella `Fortnite` client, the default `fncc` source reads the cosmetic's real `images` object from fn-api.cc, so the resolved `iconUrl` is the exact CDN link the API reports and degrades to `smallicon` when a skin has no `icon`. Used standalone (a bare `EpicGamesClient`, or `fortnite-api` as the source), the icon URL is built directly from the skin id against the CDN with no extra request. Pass your own `avatarImageResolver` to `EpicGamesClient` to override the lookup.
+
 ```ts
 const me = await session.resolveAvatar();
-console.log(me?.avatarId, me?.characterId, me?.iconUrl);
+console.log(me?.avatarId, me?.characterId, me?.source, me?.iconUrl);
+console.log(me?.iconUrls['fncc'], me?.iconUrls['fortnite-api']);
+
+const large = await session.resolveAvatar(undefined, {
+  size: AvatarIconSize.Featured,
+  source: AvatarImageSource.FortniteApi,
+});
 ```
 
 ## Matchmaking
@@ -3762,6 +3807,22 @@ const summary = await session.statusSummary();
 console.log(summary.status.description);
 for (const incident of await session.statusIncidents()) console.log(incident.name);
 ```
+
+## Content, build & islands
+<Badge type="info" text="method" />
+
+```ts
+motds(options?: MotdOptions): Promise<MotdItem[]>
+fortniteVersion(options?): Promise<FortniteVersion>
+fortniteBuild(options?: LauncherBuildOptions): Promise<FortniteBuild>
+launcherBuild(options?: LauncherBuildOptions): Promise<LauncherBuild>
+launcherAssets(options?): Promise<LauncherAsset[]>
+islandPackage(linkCode: string, options?): Promise<CookedContentPackage>
+islandKeys(linkCode: string, options?): Promise<IslandKey[]>
+launchIsland(linkCode: string, options?): Promise<IslandLaunchResult>
+```
+
+The personalised lobby MOTDs, the server and client Fortnite builds, launcher assets, and UEFN island packages, AES keys and launches. The launcherApp and Valkyrie (UEFN) tokens these need are minted from the session and cached automatically. See [Content Pages & MOTDs](/epic/content), [Launcher & Build Info](/epic/launcher) and [Islands](/epic/content-service).
 
 ---
 
@@ -4669,9 +4730,9 @@ The game-service base URL all MCP operations hit. `client.mcpRest` is the `EpicR
 
 # Locker
 
-The `Locker` reads a signed-in player's cosmetics from the `athena` MCP profile — every owned outfit, back bling, pickaxe, glider, emote, wrap and more, plus the currently equipped loadout. On its own it returns the raw item ids Epic stores. Pass it our [`FortniteAPI`](/fortnite/fortnite-api) cosmetics source and flip the `enrich` flag, and it resolves each item to full cosmetic data **and the image link** from fortnite-api.com.
+The `Locker` drives a signed-in player's locker through Epic's **EOS Locker Service** (`locker/v4`), which is the same system the game uses. It reads every owned cosmetic and the equipped loadout across every section: character, emotes, wraps, banner and lobby, Festival instruments and jam tracks, cars, companions and moments. It equips items with styles and colours, and manages saved presets.
 
-It is a bridge between the two clients, so you construct it with an account-bound `EpicAuthSession` (for the profile) and, optionally, a cosmetics source (for enrichment):
+On its own it returns the ids Epic stores. Pass it the [`FortniteAPI`](/fortnite/fortnite-api) cosmetics source and set `enrich` to resolve each item to full cosmetic data **and its image link**.
 
 ```ts
 import { EpicGamesClient, FortniteAPI, Locker } from 'fnapi-js';
@@ -4684,16 +4745,19 @@ const locker = new Locker(session, fortnite.cosmetics);
 
 const snapshot = await locker.fetch({ enrich: true });
 console.log(`${snapshot.items.length} cosmetics owned`);
-console.log('equipped skin:', snapshot.loadout.character?.cosmetic?.name);
+console.log('equipped skin:', snapshot.loadout.character?.name);
 console.log('image:', snapshot.loadout.character?.imageUrl);
+
+await locker.equipEmote('EID_Floss', 0);
+await locker.equipWrap('Wrap_121_JupiterZero');
 ```
 
-::: tip Enrichment is opt-in
-Without a cosmetics source (or with `enrich` left off), items come back with `cosmetic: null` and `imageUrl: null` — just the raw locker data. Requesting `enrich: true` **without** a source throws a `ValidationError`. The source is fetched once and cached on the locker.
+::: info Session requirements
+Every call authenticates with EOS Connect under the hood, through `session.eosToken()`, which caches the token. That requires an account-bound session such as device auth or device code, not `client_credentials`.
 :::
 
-::: info Equipped loadout & the EOS Locker Service
-Epic migrated the equipped loadout out of the `athena` MCP profile into a dedicated **EOS Locker Service**. When the `athena` profile no longer carries an equipped character, the locker transparently authenticates with EOS Connect and reads the active loadout group from `locker/v4` to fill `snapshot.loadout`. This is automatic; pass `useLockerService: false` to `fetch` to disable it and use only what the MCP profile reports. It needs an account-bound session (device auth / device code), not `client_credentials`.
+::: tip Enrichment is opt-in
+Without a cosmetics source, or with `enrich` left off, items come back with `name`, `cosmetic` and `imageUrl` set to `null`. Requesting `enrich: true` **without** a source throws a `ValidationError`. The source is fetched once and cached on the locker.
 :::
 
 ## new Locker
@@ -4705,33 +4769,39 @@ new Locker(session: EpicAuthSession, cosmetics?: LockerCosmeticSource)
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `session` | `EpicAuthSession` | An account-bound session. Its token is used to query the `athena` profile. |
-| `cosmetics` | `LockerCosmeticSource` | Anything with an `all()` returning every cosmetic — pass `client.cosmetics`. Required only for enrichment. |
+| `session` | `EpicAuthSession` | An account-bound session. |
+| `cosmetics` | `LockerCosmeticSource` | Anything with an `all()` that returns every cosmetic. Pass `client.cosmetics`. Only needed for enrichment. |
 
 ## fetch
 <Badge type="info" text="method" />
 
 ```ts
-fetch(options?: { enrich?: boolean; useLockerService?: boolean; signal?: AbortSignal }): Promise<LockerSnapshot>
+fetch(options?: { enrich?: boolean; items?: boolean; signal?: AbortSignal }): Promise<LockerSnapshot>
 ```
 
-Queries the `athena` profile and returns a `LockerSnapshot` — `{ accountId, profileRevision, items, loadout }`. With `enrich: true`, every item and every equipped slot gets its `cosmetic` and `imageUrl` filled in. If the profile has no equipped loadout, the EOS Locker Service is queried to fill it (see the note above); set `useLockerService: false` to skip that.
+Reads the locker and returns `{ accountId, items, loadout, presets, schemaPresets }`:
 
-**Returns:** `Promise<LockerSnapshot>`
+- `items` holds every owned cosmetic. It is paged out of `cosmetic-data`, which takes about 3 requests for a large locker.
+- `loadout` is the active loadout group.
+- `presets` holds the saved full-locker presets.
+- `schemaPresets` holds the older per-section presets, sorted by index.
+
+Pass `items: false` to skip the cosmetic list when you only need the loadout.
 
 ```ts
-const { items, loadout } = await locker.fetch({ enrich: true });
+const { items, loadout, presets } = await locker.fetch({ enrich: true });
 ```
 
-## items / loadout
+## items / loadout / presets
 <Badge type="info" text="method" />
 
 ```ts
-items(options?): Promise<LockerItem[]>
-loadout(options?): Promise<LockerLoadout>
+items(options?: { enrich?: boolean; signal?: AbortSignal }): Promise<LockerItem[]>
+loadout(options?: { enrich?: boolean; signal?: AbortSignal }): Promise<LockerLoadout>
+presets(signal?: AbortSignal): Promise<LockerPreset[]>
 ```
 
-Shortcuts that return just the owned items or just the equipped loadout. Both accept the same options as `fetch`.
+These are shortcuts that make only the requests they need.
 
 ## resolveImage
 <Badge type="info" text="method" />
@@ -4740,292 +4810,215 @@ Shortcuts that return just the owned items or just the equipped loadout. Both ac
 resolveImage(cosmeticId: string): Promise<string | null>
 ```
 
-Resolves the image link for a single cosmetic id straight from the cosmetics source (case-insensitive), independent of the profile. Returns `null` if the id is unknown or no source was provided.
+Looks a cosmetic id up in the cosmetics source and returns its image link. Accepts a bare id or `Type:id`.
 
-**Returns:** `Promise<string | null>`
+## Equipping
 
-```ts
-const link = await locker.resolveImage('CID_028_Athena_Commando_F');
-```
+Every edit reads the current active loadout group, changes only the targeted slots, and `PUT`s the whole group back. Other sections are never touched. Edits made through one `Locker` run one after another, so concurrent calls cannot overwrite each other. Each edit resolves to the updated `LockerLoadout`.
 
-## setFavorite / markSeen
+Item ids may be bare (`'CID_028_Athena_Commando_F'`) or full template ids (`'AthenaCharacter:cid_028_athena_commando_f'`). Bare ids get the slot's item type, and ids are lowercased the way the service stores them.
+
+### equip / equipMany
 <Badge type="info" text="method" />
 
 ```ts
-setFavorite(itemIds: string[], favorite?: boolean): Promise<MCPResponse>
-markSeen(itemIds: string[]): Promise<MCPResponse>
+equip(slot: LockerSlotName, item: string | null, options?: { variants?: LockerVariantSelection[]; signal?: AbortSignal }): Promise<LockerLoadout>
+equipMany(changes: LockerChanges, signal?: AbortSignal): Promise<LockerLoadout>
 ```
 
-Convenience mutations on the `athena` profile: favourite/unfavourite items (`SetItemFavoriteStatusBatch`) or clear the "new" badge (`MarkItemSeen`). Both take **item ids** (the profile guids from `LockerItem.id`), not cosmetic ids.
+The generic form behind every helper. `null` empties the slot. When the same item is re-equipped without `variants`, its current styles are kept. A new item starts with no styles unless you pass some.
 
 ```ts
-const [first] = await locker.items();
-if (first) await locker.setFavorite([first.id], true);
+await locker.equipMany({
+  character: { item: 'CID_028_Athena_Commando_F', variants: [{ channel: 'Material', variant: 'Mat2' }] },
+  pickaxe: 'DefaultPickaxe',
+  emote0: 'EID_Floss',
+  carBody: 'VehicleCosmetics_Body:carbody_alokin',
+});
 ```
 
-## Editing the locker
+### Helpers
+<Badge type="info" text="method" />
 
-::: warning Real, hard-to-reverse account writes
-Everything below writes to the signed-in account's live locker. There is no dry-run — the outfit, emote or preset changes exactly as the game would change it. These need an account-bound session, not `client_credentials`.
+| Method | Slot |
+| --- | --- |
+| `equipOutfit(id, options?)` | `character` |
+| `equipBackpack(id, options?)` | `backpack` |
+| `equipPickaxe(id, options?)` | `pickaxe` |
+| `equipGlider(id, options?)` | `glider` |
+| `equipContrail(id, options?)` | `contrail` |
+| `equipShoes(id, options?)` | `shoes` |
+| `equipAura(id, options?)` | `aura` |
+| `equipEmote(id, index = 0, options?)` | `emote0`–`emote7` |
+| `equipWrap(id, index?, options?)` | `wrap0`–`wrap6`; no index wraps every slot |
+| `equipJamTrack(id, index = 0, options?)` | `jamTrack0`–`jamTrack7` |
+| `equipInstrument(kind, id, options?)` | `bass`, `guitar`, `drums`, `keyboard`, `microphone` |
+| `equipLoadingScreen(id, options?)` | `loadingScreen` |
+| `equipLobbyMusic(id, options?)` | `lobbyMusic` (`sid_…` ids become `SparksSong`, others `AthenaMusicPack`) |
+| `equipCompanion(id, options?)` | `companion` |
+| `setBanner(icon, color, signal?)` | `bannerIcon` + `bannerColor` |
+| `clear(slot, signal?)` | empties any slot |
+
+Car and SUV parts (`carBody`, `carSkin`, `carWheels`, `carDriftTrail`, `carBooster`, and the same with `suv…`) go through `equip`. The `carMacaron`, `carZest`, `suvMacaron` and `suvZest` slots need a full template id.
+
+### setVariants
+<Badge type="info" text="method" />
+
+```ts
+setVariants(slot: LockerSlotName, variants: LockerVariantSelection[], signal?: AbortSignal): Promise<LockerLoadout>
+```
+
+Changes styles on the equipped item and keeps it in place. Each `channel` replaces that channel and the other channels are kept.
+
+```ts
+await locker.setVariants('character', [{ channel: 'Progressive', variant: 'Stage3' }]);
+```
+
+### setColor
+<Badge type="info" text="method" />
+
+```ts
+setColor(slot: LockerSlotName, color: string | RichColor, signal?: AbortSignal): Promise<LockerLoadout>
+```
+
+Recolours every RichColor channel on the equipped item, such as a custom umbrella or a car body paint. `color` can be any of these:
+
+- `#RGB`, `#RRGGBB` or `#RRGGBBAA`
+- `{ r, g, b, a }` with values from 0 to 1
+- a raw 32-digit RichColor value
+
+It throws a `ValidationError` when the equipped item has no colour channel.
+
+::: warning Palettes
+Some items only accept certain colours, and the service snaps any other value to its nearest allowed swatch. Read the returned loadout to see what was actually stored.
 :::
 
-Every edit method resolves the account's cosmetic-locker item automatically (the `CosmeticLocker:cosmeticlocker_athena` object), so you pass cosmetic ids, not guids. `itemId` accepts a **bare cosmetic id** (`CID_028_Athena_Commando_F`) — the backend template prefix is added for you — or a full templateId if you already have one. Pass `null` to clear a slot.
+`encodeRichColor(color)` and `decodeRichColor(additionalData)` are exported for working with these values directly. RichColor data is four big-endian float32 values (RGBA).
 
-Every method also accepts a target: `{ lockerItem }` to override the resolved guid, or `{ preset }` to target a saved legacy loadout by index instead of the live one.
-
-### Equipping slots
+### restore
 <Badge type="info" text="method" />
 
 ```ts
-setSlot(category: LockerCategoryValue, itemId: string | null, options?: LockerEquipOptions): Promise<MCPResponse>
-
-equipOutfit(itemId, options?)        // Character
-equipBackpack(itemId, options?)      // Backpack
-equipPickaxe(itemId, options?)       // Pickaxe
-equipGlider(itemId, options?)        // Glider
-equipContrail(itemId, options?)      // SkyDiveContrail
-equipMusicPack(itemId, options?)     // MusicPack
-equipLoadingScreen(itemId, options?) // LoadingScreen
-equipEmote(itemId, slotIndex?, options?)  // Dance — slotIndex 0..5, default 0
-equipWrap(itemId, slotIndex?, options?)   // ItemWrap — slotIndex 0..6, default -1 (all slots)
-clearSlot(category, options?)             // unequip
+restore(loadout: LockerLoadout | { loadouts: Record<string, LockerSchemaLoadout> }, signal?: AbortSignal): Promise<LockerLoadout>
 ```
 
-The typed helpers are thin wrappers over `setSlot`, which sends `SetCosmeticLockerSlot`. `LockerEquipOptions` adds `slotIndex` and `variants`.
+Puts a previously read loadout back exactly as it was. This is handy for "try it on" features:
 
 ```ts
+const before = await locker.loadout();
 await locker.equipOutfit('CID_028_Athena_Commando_F');
-await locker.equipEmote('EID_Floss', 0);
-await locker.equipWrap('Wrap_001_FireHeart');          // every wrap slot
-await locker.clearSlot('Backpack');
+await locker.restore(before);
 ```
 
-### Styles & variants
+## Presets
+
+These are the full-locker presets shown in the game's preset menu (`loadout-group-preset`).
+
+```ts
+savePreset(name: string, options?: { loadouts?: Record<string, LockerSchemaLoadout>; signal?: AbortSignal }): Promise<LockerPreset>
+updatePreset(presetId: string, update: { name?: string; loadouts?: Record<string, LockerSchemaLoadout> | 'current' }, signal?: AbortSignal): Promise<LockerPreset>
+renamePreset(presetId: string, name: string, signal?: AbortSignal): Promise<LockerPreset>
+applyPreset(presetId: string, signal?: AbortSignal): Promise<LockerLoadout>
+deletePreset(presetId: string, signal?: AbortSignal): Promise<void>
+```
+
+- `savePreset` saves the current loadout, or the `loadouts` you pass, as a new preset.
+- `updatePreset` changes a preset's name or contents. Pass `loadouts: 'current'` to overwrite it with what is equipped now.
+- `applyPreset` equips the preset and marks it as the active one.
+- `updatePreset`, `renamePreset` and `applyPreset` accept a preset id or its exact name.
+
+```ts
+const preset = await locker.savePreset('Tryhard');
+await locker.renamePreset(preset.id, 'Sweaty');
+await locker.applyPreset('Sweaty');
+await locker.deletePreset(preset.id);
+```
+
+## Item actions
+
+### setCompanionName
 <Badge type="info" text="method" />
 
 ```ts
-setVariants(category, itemId, variants: LockerVariantUpdate[], options?): Promise<MCPResponse>
+setCompanionName(item: LockerItem | string, name: string, signal?: AbortSignal): Promise<void>
 ```
 
-Re-slots the item with a set of variant channels. A `LockerVariantUpdate` is `{ channel, active, owned? }`; `owned` defaults to `[]`. You can also pass `variants` through any `equip*`/`setSlot` call.
+Renames an owned companion. `item` is a `LockerItem`, a cosmetic id, a template id or the item guid.
 
-```ts
-await locker.setVariants('Character', 'CID_028_Athena_Commando_F', [
-  { channel: 'Material', active: 'Mat2' },
-]);
-```
-
-### Equipping a whole loadout at once
+### lockInItem
 <Badge type="info" text="method" />
 
 ```ts
-equipLoadout(loadout: LockerEquipLoadout, options?): Promise<MCPResponse>
+lockInItem(item: LockerItem | string, variants: Record<string, { variantTag: string; additionalData?: string }>, signal?: AbortSignal): Promise<void>
 ```
 
-Batches every provided slot into a single `SetCosmeticLockerSlots` call. Any key you omit is left untouched; set a key to `null` to clear it. `dances` and `itemWraps` are arrays, slotted by index.
+Permanently locks the styles in on an immutable item, such as a companion's colours. This cannot be undone.
 
-```ts
-await locker.equipLoadout({
-  character: 'CID_028_Athena_Commando_F',
-  backpack: 'BID_004_BlackKnight',
-  pickaxe: 'Pickaxe_Lockjaw',
-  dances: ['EID_Floss', 'EID_Dab', null],
-  itemWraps: ['Wrap_001_FireHeart'],
-});
-```
-
-### Banner & name
+### setFavorite / markSeen
 <Badge type="info" text="method" />
 
 ```ts
-setBanner(iconId: string, colorId: string, options?): Promise<MCPResponse>
-renameLocker(name: string, options?): Promise<MCPResponse>
+setFavorite(itemIds: string[], favorite?: boolean, signal?: AbortSignal): Promise<MCPResponse>
+markSeen(itemIds: string[], signal?: AbortSignal): Promise<MCPResponse>
 ```
 
-`setBanner` takes short banner template names (`brs10level100`, `defaultcolor10`); a `Type:` prefix is stripped for you. `renameLocker` renames the loadout preset.
-
-### Presets (legacy loadout slots)
-<Badge type="info" text="method" />
-
-```ts
-copyPreset(sourceIndex: number, targetIndex: number, newName?: string, signal?): Promise<MCPResponse>
-deletePreset(index: number, options?: { fallbackLoadoutIndex?: number; leaveNullSlot?: boolean }): Promise<MCPResponse>
-```
-
-`copyPreset` saves the loadout at `sourceIndex` into `targetIndex` (`CopyCosmeticLoadout`) — copy from index `0` (the live locker) to save the current fit as a preset. `deletePreset` removes one (`DeleteCosmeticLoadout`); `fallbackLoadoutIndex` defaults to `-1` (none).
-
-```ts
-await locker.copyPreset(0, 3, 'Sweaty Fit');
-await locker.deletePreset(3);
-```
-
-### Preset builder
-<Badge type="info" text="method" />
-
-```ts
-createPreset(): LockerPresetBuilder
-applyPreset(slots: LockerPresetSlot[], options?: ApplyPresetOptions): Promise<MCPResponse>
-```
-
-`createPreset()` returns a fluent `LockerPresetBuilder` for assembling a full fit one cosmetic at a time — each with its own styles (variants) — then applying it in a single `SetCosmeticLockerSlots` write. Build up the slots, then call `.apply()` (or its alias `.save()`).
-
-```ts
-const response = await locker
-  .createPreset()
-  .character('CID_028_Athena_Commando_F', {
-    variants: [{ channel: 'Material', active: 'Mat2' }],
-  })
-  .backpack('BID_004_BlackKnight')
-  .pickaxe('Pickaxe_Lockjaw')
-  .glider('Glider_Warpaint')
-  .emote(0, 'EID_Floss')
-  .emote(1, 'EID_Dab')
-  .wrap(-1, 'Wrap_001_FireHeart')
-  .clear('SkyDiveContrail')
-  .name('Sweaty Fit')
-  .apply();
-```
-
-Per-category shortcuts (`character`, `backpack`, `pickaxe`, `glider`, `contrail`, `musicPack`, `loadingScreen`) target slot `0`; `emote(slotIndex, id)` and `wrap(slotIndex, id)` take an index (`-1` applies a wrap to every slot). `slot(category, itemId, options)` is the general form, `clear(category, slotIndex?)` empties a slot with `null`, and adding the same category+index again replaces the earlier entry. `.name(...)` triggers a follow-up `SetCosmeticLockerName`. Apply into a preset slot instead of the live locker with `.apply({ preset: 3 })`.
-
-Prefer `applyPreset(slots, options)` directly when you already have a `LockerPresetSlot[]` in hand — the builder's `.build()` returns exactly that.
-
-### Modular loadouts (current per-section system)
-<Badge type="info" text="method" />
-
-```ts
-putModularLoadout(loadoutType: ModularLoadoutValue, presetId: number, data: ModularLoadoutInput, signal?): Promise<MCPResponse>
-equipModularPreset(loadoutType: ModularLoadoutValue, presetId: number, signal?): Promise<MCPResponse>
-deleteModularLoadout(loadoutType: ModularLoadoutValue, presetId: number, signal?): Promise<MCPResponse>
-```
-
-The modern locker stores presets per section (`ModularLoadout.character`, `.emotes`, `.wraps`, `.platform`, `.sparks`, `.jam`, `.vehicle`). `putModularLoadout` writes a preset — `data` is `{ slots, displayName? }` where each slot is `{ slotTemplate, equippedItem?, customizations? }` — and the SDK stringifies it into the `loadoutData` field Epic expects. `equipModularPreset` applies a saved preset; `deleteModularLoadout` removes one.
-
-```ts
-import { ModularLoadout } from 'fnapi-js';
-
-await locker.putModularLoadout(ModularLoadout.character, 1, {
-  displayName: 'Preset 1',
-  slots: [
-    { slotTemplate: 'CosmeticLoadoutSlotTemplate:LoadoutSlot_Character', equippedItem: 'AthenaCharacter:CID_028_Athena_Commando_F' },
-    { slotTemplate: 'CosmeticLoadoutSlotTemplate:LoadoutSlot_Pickaxe', equippedItem: 'AthenaPickaxe:Pickaxe_Lockjaw' },
-  ],
-});
-await locker.equipModularPreset(ModularLoadout.character, 1);
-```
-
-### Random & shuffle toggles
-<Badge type="info" text="method" />
-
-```ts
-setRandomLoadout(enabled: boolean, signal?): Promise<MCPResponse>
-setShuffleEnabled(loadoutType: ModularLoadoutValue, enabled: boolean, signal?): Promise<MCPResponse>
-```
-
-`setRandomLoadout` toggles the "random outfit each match" flag; `setShuffleEnabled` toggles shuffle for a modular section.
+These take item guids (`LockerItem.id`). The locker service has no endpoint for them, so they still go through the `athena` MCP profile.
 
 ## Types
 
 ### LockerItem
 
-```ts
-interface LockerItem {
-  id: string;            // profile item guid — use this for mutations
-  templateId: string;    // e.g. AthenaCharacter:cid_028_athena_commando_f
-  type: string;          // AthenaCharacter, AthenaDance, ...
-  cosmeticId: string;    // cid_028_athena_commando_f
-  favorite: boolean;
-  seen: boolean;
-  variants: LockerVariant[];
-  name: string | null;           // filled by enrich (works for tracks too)
-  cosmetic: AnyCosmetic | null;  // filled by enrich
-  imageUrl: string | null;       // filled by enrich
-}
-```
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | `string` | Item guid. |
+| `templateId` | `string` | e.g. `AthenaCharacter:cid_028_athena_commando_f`. |
+| `type` / `cosmeticId` | `string` | The two halves of `templateId`. |
+| `favorite` / `seen` | `boolean` | Favourited, and whether the item has been seen. |
+| `lockedIn` | `boolean \| null` | Lock-in state for immutable items. |
+| `variants` | `LockerVariant[]` | `{ channel, active, activeData, owned }` per style channel. |
+| `createdAt` / `updatedAt` | `string \| null` | ISO timestamps. |
+| `name` / `cosmetic` / `imageUrl` | | Filled in by enrichment. |
 
 ### LockerLoadout
 
-```ts
-interface LockerLoadout {
-  character: LockerSlot | null;
-  backpack: LockerSlot | null;
-  pickaxe: LockerSlot | null;
-  glider: LockerSlot | null;
-  contrail: LockerSlot | null;
-  musicPack: LockerSlot | null;
-  loadingScreen: LockerSlot | null;
-  dances: LockerSlot[];
-  itemWraps: LockerSlot[];
-}
-```
+These named sections hold a `LockerEquippedItem` or `null`:
 
-A `LockerSlot` is `{ type, cosmeticId, cosmetic, imageUrl }`, with `cosmetic`/`imageUrl` populated by enrichment.
+- `character`, `backpack`, `pickaxe`, `glider`, `contrail`, `shoes`, `aura`
+- `emotes` (8 entries), `wraps` (7) and `jamTracks` (8)
+- `banner.icon`, `banner.color`, `lobbyMusic`, `loadingScreen`
+- `instruments.{bass,guitar,drums,keyboard,microphone}`
+- `car` and `suv`, each with `{ body, skin, wheels, driftTrail, booster, macaron, zest }`
+- `companion`, `moments.bus`, `moments.victory`
 
-### LockerCategory / ModularLoadout
+It also has these fields:
 
-`LockerCategory` maps friendly names to the backend categories `setSlot` expects; `ModularLoadout` maps sections to their schema ids.
+| Field | Description |
+| --- | --- |
+| `slots` | Every equipped item keyed by `LockerSlotName`. |
+| `other` | Items in slots this version does not know yet, so new sections still show up. |
+| `shuffle` | Shuffle mode per schema. |
+| `presetId` | The active preset id, if one is equipped. |
+| `group` | The raw active loadout group. |
 
-```ts
-LockerCategory = {
-  character: 'Character', backpack: 'Backpack', pickaxe: 'Pickaxe',
-  glider: 'Glider', contrail: 'SkyDiveContrail', musicPack: 'MusicPack',
-  loadingScreen: 'LoadingScreen', dance: 'Dance', itemWrap: 'ItemWrap',
-};
+`LockerEquippedItem` is `{ slot, schema, slotTemplate, templateId, type, cosmeticId, resolvedTemplateId, variants, name, cosmetic, imageUrl }`. `resolvedTemplateId` is the item the game picked for a "random" slot.
 
-ModularLoadout = {
-  character: 'CosmeticLoadout:LoadoutSchema_Character',
-  emotes: 'CosmeticLoadout:LoadoutSchema_Emotes',
-  wraps: 'CosmeticLoadout:LoadoutSchema_Wraps',
-  platform: 'CosmeticLoadout:LoadoutSchema_Platform',
-  sparks: 'CosmeticLoadout:LoadoutSchema_Sparks',
-  jam: 'CosmeticLoadout:LoadoutSchema_Jam',
-  vehicle: 'CosmeticLoadout:LoadoutSchema_Vehicle',
-};
-```
+### LockerSchema / LOCKER_SLOTS
 
-### Edit inputs
+`LockerSchema` names the ten loadout schemas, such as `LockerSchema.character` (`CosmeticLoadout:LoadoutSchema_Character`). `LOCKER_SLOTS` maps every `LockerSlotName` to its `{ schema, slotTemplate, itemType }`.
 
-```ts
-interface LockerVariantUpdate {
-  channel: string;          // e.g. 'Material'
-  active: string;           // e.g. 'Mat2'
-  owned?: string[];         // defaults to []
-}
+## Raw session calls
 
-interface LockerSlotTarget {
-  lockerItem?: string;      // override the resolved CosmeticLocker guid
-  preset?: number;          // target a saved loadout by index
-  signal?: AbortSignal;
-}
+The locker is built on these `EpicAuthSession` methods, which you can also call directly:
 
-interface LockerEquipOptions extends LockerSlotTarget {
-  slotIndex?: number;
-  variants?: LockerVariantUpdate[];
-}
-
-interface LockerEquipLoadout {
-  character?: string | null;
-  backpack?: string | null;
-  pickaxe?: string | null;
-  glider?: string | null;
-  contrail?: string | null;
-  musicPack?: string | null;
-  loadingScreen?: string | null;
-  dances?: (string | null)[];
-  itemWraps?: (string | null)[];
-}
-
-interface ModularSlotInput {
-  slotTemplate: string;
-  equippedItem?: string | null;
-  customizations?: { channelTag: string; variantTag: string }[];
-}
-
-interface ModularLoadoutInput {
-  slots: ModularSlotInput[];
-  displayName?: string;
-}
-```
+- `lockerItems()`
+- `lockerCosmeticPage({ limit, nextToken })`
+- `lockerCosmetics()`
+- `setActiveLoadoutGroup(group)`
+- `putLoadoutGroupPreset(id, preset)`
+- `updateLoadoutGroupPreset(id, preset)`
+- `deleteLoadoutGroupPreset(id)`
+- `setCompanionName(cosmeticItemId, name)`
+- `lockInImmutableItem(itemIdentifier, variants)`
 
 ---
 
@@ -5671,6 +5664,80 @@ console.log(`Division ${me.currentDivision} (peak ${me.highestDivision})`);
 Every call defaults to the `fortnite` namespace. Override per-call with `options.namespace`, or construct `new HabaneroManager(rest, { namespace })` for a different default.
 :::
 
+## Named ranks & standings
+<Badge type="info" text="method" />
+
+The raw API only returns division numbers. The session turns them into what players see, using the ladder, mode names and colours from the game's own Habanero data:
+
+```ts
+const standings = await session.rankedStandings();
+for (const s of standings) {
+  const place = s.unrealRank !== null ? `#${s.unrealRank}` : `${Math.round(s.progress * 100)}%`;
+  console.log(`${s.mode.name}: ${s.played ? s.current.name : 'Unranked'} ${place}`);
+}
+// Reload: Unreal #1007
+// Battle Royale: Bronze II 48%
+```
+
+```ts
+rankedCurrentTracks(options?): Promise<HabaneroTrack[]>
+rankedStandings(accountId?: string, options?: { history?: boolean; playedOnly?: boolean; signal? }): Promise<RankedStanding[]>
+rankedStanding(rankingType: string, accountId?: string, options?): Promise<RankedStanding | null>
+rankedStandingsBulk(accountIds: string[], options?: { rankingTypes?: string[]; signal? }): Promise<Map<string, RankedStanding[]>>
+```
+
+`rankedCurrentTracks` returns only the tracks running right now (cached for five minutes). `rankedStandings` joins an account's progress with those tracks — played modes first, current modes before legacy ones, then by mode name; `history: true` covers every season the account ever had a track in, `playedOnly` drops tracks with no matches, and `includeLegacy: false` drops legacy modes. `rankedStanding` picks one mode. `rankedStandingsBulk` resolves any number of accounts across the current tracks, 25 per request.
+
+```ts
+interface RankedStanding {
+  accountId: string;
+  rankingType: string;
+  mode: RankedModeInfo;          // { name: 'Reload', zeroBuild: null, combined: true, legacy, limited }
+  trackguid: string;
+  track: HabaneroTrack | null;
+  active: boolean;               // the track is running now
+  played: boolean;               // false when lastUpdated is the 1970 epoch
+  current: RankInfo;
+  highest: RankInfo;
+  progress: number;              // 0..1 toward the next division, 1 at Unreal
+  unrealRank: number | null;     // leaderboard placement once Unreal
+  unrealLegend: boolean;         // top 500 Unreal in a mode that has Unreal Legend
+  rating: number | null;
+  highestRating: number | null;
+  lastPlayed: string | null;
+}
+
+interface RankInfo {
+  division: number;
+  divisionCount: number;
+  name: string;                  // 'Elite II', 'Unreal', 'Unreal Legend', 'Unranked'
+  seasonalName: string | null;   // themed name shown that season, e.g. 'Emperor' in season 35
+  tier: RankTier;                // 'bronze' … 'champion' | 'unreal' | 'unreal-legend' | 'unranked'
+  subdivision: 1 | 2 | 3 | null;
+  colors: { text; background; progressBar; progressBackground };
+}
+```
+
+### Legacy modes
+
+`mode.legacy` is `true` for ranked modes that are no longer part of the current lineup: the pre-combined Battle Royale / Zero Build and Reload build / zero-build tracks, Fortnite OG, The Getaway, Ballistic, Fall Guys and Rocket Racing. Legacy modes are never hidden by the package — if Epic still returns a track for them (Rocket Racing's runs until its end date) they appear in the standings, sorted after current modes. The current modes are Battle Royale, Reload and Arenas (all combined build / zero-build).
+
+### Unreal Legend
+
+Battle Royale and Reload (the combined tracks) show **Unreal Legend** instead of Unreal for the top of the Unreal leaderboard — the game flags these two modes with `TopTierTopLeaderboardPositions`, and `mode.unrealLegend` mirrors that. Epic does not ship the cut-off in the client, so the package uses the top **500** (`UNREAL_LEGEND_TOP_POSITIONS`); pass `unrealLegendTop` to `rankedStandings` / `rankedStandingsBulk` / `toRankedStanding` to change it. An Unreal Legend standing has `unrealLegend: true`, a `current` rank of tier `unreal-legend`, and keeps `unrealRank`. Peak (`highest`) stays Unreal, since the API does not record a peak placement.
+
+### Seasonal rank names
+
+Some seasons rename the top ranks — in season 35 Elite, Champion and Unreal were shown as Admiral, Grand Moff and Emperor `rankForTrack(division, track)` reads the season from the track's leaderboard id and fills `seasonalName`; `name` always stays the standard ladder name.
+
+### Ladders
+
+Current tracks have **22 divisions**: Bronze, Silver, Gold, Platinum, Diamond, Elite and Champion each with I–III, then Unreal. Older seasons (and Rocket Racing, Fall Guys, OG, The Getaway) use the **18-division** ladder where Elite, Champion and Unreal are single ranks. `rankForDivision(division, divisionCount)` does the mapping on its own; ladders it does not know (some event tracks have 101 divisions) come back as `Division N`.
+
+### Helpers
+
+`rankForDivision`, `unrankedRank`, `rankedMode(rankingType)`, `RANKED_MODES`, `RankTier`, `RANK_TIER_COLORS` and `toRankedStanding(progress, track)` are exported for raw progress you fetched yourself.
+
 ## RankingType
 <Badge type="tip" text="enum" />
 
@@ -5813,11 +5880,14 @@ interface HabaneroProgress {
   currentDivision: number;
   highestDivision: number;
   promotionProgress: number;
-  currentPlayerRanking: number | null;
+  currentPlayerRanking?: number;
+  rankingRating?: number;
+  highestRating?: number;
+  startDivision?: number;
 }
 ```
 
-An account's standing in a track. `promotionProgress` is a `0..1` fraction toward the next division; `currentPlayerRanking` is only set for tracks with a numeric ladder (otherwise `null`).
+An account's standing in a track. `promotionProgress` is a `0..1` fraction toward the next division. `currentPlayerRanking` is the Unreal leaderboard placement and is only present at Unreal; `rankingRating` / `highestRating` are the matchmaking rating (`-1` when the account never played). An account that never played the track has `lastUpdated: "1970-01-01T00:00:00Z"`.
 
 ## Options
 <Badge type="tip" text="interface" />
@@ -5828,6 +5898,304 @@ interface HabaneroTracksOptions extends HabaneroBaseOptions { endsAfter?: string
 interface HabaneroProgressOptions extends HabaneroBaseOptions { endsAfter?: string; }
 interface HabaneroRankingTypeOptions extends HabaneroBaseOptions { endsAfter?: string; }
 ```
+
+---
+
+# Tournaments
+
+Tournaments come from Epic's **Events service** (`events-public-service-live`). The session reads the event list and joins each event with its display info from the [content pages](/epic/content), such as names, posters and colours. For every window it resolves the playlist, match cap, scoring rules, prize tables and ranked brackets, and works out from the player's tokens whether they can enter. It also reads window leaderboards, score lookups and the player's own history.
+
+```ts
+const session = await epic.loginWithDeviceAuth(creds);
+
+for (const cup of await session.tournaments({ region: 'EU' })) {
+  console.log(`[${cup.status}] ${cup.name}`, cup.nextWindow?.beginTime, cup.nextWindow?.eligible);
+}
+```
+
+All calls need an account-bound session.
+
+## tournaments
+<Badge type="info" text="method" />
+
+```ts
+tournaments(options?: {
+  region?: string;
+  showPastEvents?: boolean;
+  showPrivateEvents?: boolean;
+  eligibility?: boolean;
+  now?: number;
+  cache?: boolean | { ttl: number };
+  signal?: AbortSignal;
+}): Promise<Tournament[]>
+```
+
+Returns the tournaments in the order the game lists them:
+
+1. live tournaments
+2. upcoming ones, soonest first
+3. finished ones, most recent first
+
+Leave `region` out to get every region. Use `EventRegion` for the codes: `NAE`, `NAW`, `NAC`, `EU`, `BR`, `ASIA`, `OCE`, `ME`.
+
+With `eligibility` on (the default), the player's tournament tokens are fetched and each window gets `eligible`. That flag checks only the token requirements: the required-all and required-any lists, and the banned or region-locked tokens. Other requirements are listed in `window.requirements` but not checked:
+
+- `mfa`
+- `eula:…`
+- account level
+- `leaderboard:…:rank:N`
+
+The event list is cached for 60 seconds by default.
+
+| Field | Description |
+| --- | --- |
+| `eventId` / `displayId` | Service id and content display id. |
+| `name` / `subtitle` / `description` / `schedule` | Display text. `name` falls back to the event id. |
+| `type` | `tournamentType`, e.g. `FNCS`, `CashCup`, `RankedCup`, `ShopCup`. |
+| `status` | `'live' \| 'upcoming' \| 'ended'`. |
+| `nextWindow` | The live window, else the next upcoming one, else `null`. |
+| `windows` | Every `TournamentWindow`, in time order. |
+| `regions` / `platforms` / `minimumAccountLevel` | Entry info. |
+| `images` / `colors` | `poster`, `posterBack`, `square`, `background`, `loadingScreen` and `playlistTile` images, plus `primary`, `secondary` and `title` colours. |
+| `linkCode` | The `tournament_…` link code. |
+| `display` / `raw` | The content entry and the raw event. |
+
+### TournamentWindow
+
+| Field | Description |
+| --- | --- |
+| `id`, `round`, `status` | Window id, round number, and its own live/upcoming/ended status. |
+| `countdownTime`, `beginTime`, `endTime`, `isTBD` | Schedule. |
+| `playlistId`, `matchCap` | From the window's event template. |
+| `requirements` | Extra requirements such as `mfa` and `eula:…`. |
+| `requiredTokens` | `{ all, any, none }` token lists. |
+| `eligible` | Token eligibility, or `null` when eligibility was skipped. |
+| `scoring` | Scoring rules: `{ trackedStat, matchRule, rewardTiers }`. |
+| `payouts` | Prize tiers: `{ scoringType, ranks: [{ threshold, payouts }] }`. |
+| `brackets` | Sub-leaderboards with their own `scoring` and `payouts`, such as the per-rank brackets in Ranked Cups. |
+| `leaderboards`, `canLiveSpectate`, `raw` | Leaderboard definition ids, spectating, and the raw window. |
+
+## tournamentLeaderboard
+<Badge type="info" text="method" />
+
+```ts
+tournamentLeaderboard(eventId: string, eventWindowId: string, options?: {
+  page?: number;
+  rank?: number;
+  teamAccountIds?: string[];
+  showLiveSessions?: boolean;
+}): Promise<EventLeaderboard>
+```
+
+Returns one page of 100 entries from a window leaderboard. The service exposes at most 100 pages (`page` 0–99). Each entry has these fields:
+
+- `rank`
+- `pointsEarned`
+- `score`, the tiebreaker-packed value
+- `teamAccountIds`
+- `pointBreakdown`
+- `sessionHistory`, with the tracked stats of each match
+
+```ts
+const board = await session.tournamentLeaderboard(cup.eventId, cup.windows[0].id, { page: 0 });
+console.log(board.entries[0].rank, board.entries[0].pointsEarned);
+```
+
+## tournamentScores
+<Badge type="info" text="method" />
+
+```ts
+tournamentScores(eventId: string, eventWindowId: string, options: {
+  teams: string[][];
+  fromIndex?: number;
+  aroundTeamIds?: string[][];
+  findTeams?: boolean;
+}): Promise<EventScore[]>
+```
+
+This is the in-game friends-leaderboard lookup. Pass the `teams` you care about and either `fromIndex` or `aroundTeamIds`; every account in `aroundTeamIds` must also be in `teams`. It resolves to `[]` when none of the teams have a score in range. It only works for events from Season 22 onwards.
+
+## tournamentHistory
+<Badge type="info" text="method" />
+
+```ts
+tournamentHistory(eventId: string, options?: { eventWindowId?: string; accountId?: string; teamAccountIds?: string[] }): Promise<EventScore[]>
+```
+
+Returns the player's scores across every window of an event, or for one window when you pass `eventWindowId`.
+
+## tournamentPlayer / tournamentTokens
+<Badge type="info" text="method" />
+
+```ts
+tournamentPlayer(accountId?: string): Promise<EventPlayer>
+tournamentTokens(accountIds?: string[]): Promise<EventTokens>
+```
+
+`tournamentPlayer` returns the player's tournament profile: `tokens`, `teams`, `persistentScores` (Hype), `pendingPayouts` and `groupIdentity`. `tournamentTokens` returns just the tokens for several accounts.
+
+## tournamentData
+<Badge type="info" text="method" />
+
+```ts
+tournamentData(options?: { region?: string; showPastEvents?: boolean; showPrivateEvents?: boolean }): Promise<EventsData>
+```
+
+Returns the raw event bundle: events, templates, leaderboard definitions, scoring rule sets, payout tables and score-location maps. Pass it to `toTournaments(data, contentTournaments, { tokens, now })` to shape it yourself. `windowStatus(window)` and `windowEligible(window, tokens)` are exported too.
+
+## EventsManager
+<Badge type="tip" text="class" />
+
+`epic.events` is the low-level client. Every method takes an access token:
+
+- `data`
+- `download`, which needs `region` and `platform`
+- `player`
+- `tokens`
+- `history`
+- `leaderboard`
+- `scores`
+
+---
+
+# Quests
+
+The `QuestBook` reads a player's quests and lays them out the way the game's quest page does. It covers two sources:
+
+- **Battle Royale and every mode**: Reload, LEGO, Festival, Rocket Racing, OG, Fall Guys, Ballistic, Arenas, ranked and events. These come from Epic's EOS quest service (`quest/v3`).
+- **Save the World**: these come from the `campaign` profile.
+
+Progress comes from Epic. Quest names, objective text, targets, categories, headers and sort orders come from the game files, through a `QuestCatalog` backed by fn-api.cc's [`/v1/quests`](/fncc/fncc#quests) endpoint.
+
+```ts
+import { EpicGamesClient, FnccAPI, QuestBook, QuestCatalog } from 'fnapi-js';
+
+const catalog = new QuestCatalog(new FnccAPI().quests);
+const session = await new EpicGamesClient().loginWithDeviceAuth(creds);
+
+const log = await new QuestBook(session, catalog).log({ mode: 'battle-royale' });
+for (const category of log.categories) {
+  console.log(category.name);
+  for (const quest of category.quests) {
+    console.log(' ', quest.name, quest.objectives.map((o) => `${o.progress}/${o.target}`).join(' '));
+  }
+}
+```
+
+::: tip One catalog for every account
+Quest names and categories are the same for every player, so create **one** `QuestCatalog` and share it between `QuestBook`s.
+
+The catalog loads the whole quest dataset in a single `/v1/quests` request, about half a second, and then answers from memory. When Fortnite updates, call `catalog.refresh()` to load the new build's data; `catalog.build` tells you which build is loaded.
+:::
+
+## QuestBook
+<Badge type="tip" text="class" />
+
+```ts
+new QuestBook(session: EpicAuthSession, catalog?: QuestCatalog)
+```
+
+Without a catalog you still get every quest's progress, but `name`, objective text, targets and categories are empty. Passing `enrich: true` without a catalog throws a `ValidationError`.
+
+### log
+<Badge type="info" text="method" />
+
+```ts
+log(options?: { mode?: QuestMode | QuestMode[]; includeClaimed?: boolean; includeHidden?: boolean; enrich?: boolean; signal?: AbortSignal }): Promise<QuestLog>
+```
+
+Returns `{ categories, uncategorized, quests, bundles, schedules, tracked, xp, enriched }`, laid out like the game:
+
+- `categories` are the game's quest categories (`QuestCategoryData`), ordered by their `SortOrder`.
+- Each category splits its quests into `headers`, such as "Week 1" or "Daily Challenge Quests", ordered by header sort order.
+- Quests inside a header are ordered with unfinished ones first, then by the game's `SortPriority`, then by name.
+
+A quest can sit in more than one category; dailies, for example, also appear under universal dailies. Quests whose tags match no category are listed in `uncategorized`.
+
+`mode` keeps only categories for those modes. Use `QuestMode` for the values: `battle-royale`, `reload`, `lego`, `festival`, `rocket-racing`, `og`, `fall-guys`, `ballistic`, `arenas`, `save-the-world`. Claimed quests and quests the game hides are left out unless you pass `includeClaimed` or `includeHidden`. Hidden quests are:
+
+- granter quests
+- tracker quests kept out of the quest page (`includedInCategories: false`)
+- old quests still on the account that the current game no longer has any data for
+
+`xp` holds the season number, level, season XP and rested XP from the quest service.
+
+### stw
+<Badge type="info" text="method" />
+
+```ts
+stw(options?: { includeClaimed?: boolean; enrich?: boolean; signal?: AbortSignal }): Promise<StwQuestLog>
+```
+
+Returns the Save the World quest log, grouped by the game's `QuestCategoryTable` (Main Quests, Daily Quests, Side Quests, events and so on) and ordered by category priority. Objective progress comes from the campaign profile's `completion_*` counters.
+
+It returns `{ categories, uncategorized, quests, dailies, dailyRerolls, enriched }`:
+
+- `dailies` are the active STW daily quests, the only ones `reroll` works on. Wargames and Dungeon "dailies" are event quests and can't be rerolled.
+- `dailyRerolls` is how many rerolls are left today.
+
+### claim / reroll / track
+<Badge type="info" text="method" />
+
+```ts
+claim(quest: Quest | string, options?: { selectedRewardIndex?: number }): Promise<MCPResponse>
+reroll(quest: Quest | string): Promise<MCPResponse>
+track(quests: Array<Quest | string>): Promise<MCPResponse>
+```
+
+These use the quest's own profile, `athena` or `campaign`. `reroll` is for STW daily quests (check `stw().dailyRerolls` first; Epic rejects the call when none are left), `track` sets the tracked BR quests, and `claim` claims a finished quest's reward.
+
+## Quest
+
+| Field | Description |
+| --- | --- |
+| `id`, `templateId`, `profile` | Item guid, template id, and `'athena'` or `'campaign'`. |
+| `name`, `description` | Display text from the game files. Story quests often have no name, so `name` falls back to the description (as the game does), then to the first objective's text. |
+| `state`, `completed`, `claimed` | `state` is lower-cased (`active`, `claimed`). `completed` is also set when every objective has reached its target. |
+| `progress` | 0–1 across all objectives, or `null` when targets are unknown. |
+| `objectives` | `{ id, description, progress, target, completed, stage, stageCount }`. `stage`/`stageCount` is the game's "step 1 of 4" display for quest chains. |
+| `completionText` | The line the game shows when the quest is done, e.g. "Agreed to help Bastian!". |
+| `bundleTemplateId`, `scheduleTemplateId` | The challenge bundle and schedule the quest came from. |
+| `expiresAt`, `tracked`, `visible` | Expiry, whether it is tracked, and whether the game shows it. |
+| `sortPriority`, `type`, `subtype`, `tags` | Game ordering, quest type and subtype (e.g. `WeeklyChallenge`), and category tags. |
+
+## QuestCatalog
+<Badge type="tip" text="class" />
+
+```ts
+new QuestCatalog(source?: QuestDataSource | QuestAssetSource, options?: { lang?: string; concurrency?: number; maxRateLimitWaits?: number })
+QuestCatalog.from(snapshot: QuestCatalogSnapshot, source?: QuestDataSource | QuestAssetSource): QuestCatalog
+export(): Promise<QuestCatalogSnapshot>
+refresh(): void
+build: string | null
+```
+
+There are two kinds of source:
+
+- **`new FnccAPI().quests`** (recommended): loads everything in one request. `lang` picks the text language.
+- **`new FnccAPI().assets`**, or anything with `search` and `json`: reads each game file on its own. This needs about a thousand requests on a cold start and waits out rate limits as it goes. Use it only with a mirror that has no `/v1/quests`.
+
+`export()` saves the catalog and `QuestCatalog.from(snapshot)` restores it. A snapshot taken from the quests endpoint is complete and needs no source at all, which is handy for running offline.
+
+```ts
+writeFileSync('quest-catalog.json', JSON.stringify(await catalog.export()));
+const restored = QuestCatalog.from(JSON.parse(readFileSync('quest-catalog.json', 'utf8')));
+```
+
+## Raw session calls
+
+These `EpicAuthSession` methods are available directly:
+
+| Method | Description |
+| --- | --- |
+| `questProgress()` | The raw `quest/v3` progress. |
+| `questLogin(profile?)` | Generates quests (`ClientQuestLogin`). |
+| `claimQuestReward(questId, { profile, selectedRewardIndex })` | Claims a quest reward. |
+| `rerollDailyQuest(questId, { profile })` | Rerolls a daily quest. The profile defaults to `campaign`. |
+| `trackQuests(templateIds)` | Sets the tracked BR quests (`AthenaTrackQuests`). |
+| `pinStwQuests(questIds)` | Pins STW quests (`SetPinnedQuests`). |
+
+`epic.quests` (`QuestService`) exposes `progress(eosToken, accountId)`.
 
 ---
 
@@ -5973,6 +6341,8 @@ Once the session has connected at least once, an **unexpected** stream drop (Epi
 | `reconnectInitialDelayMs` | `1000` | Delay before the first retry; doubles each attempt (exponential backoff). |
 | `reconnectMaxDelayMs` | `30000` | Upper bound on the backoff delay. |
 | `maxReconnectAttempts` | `0` | Cap on consecutive attempts (`0` = unlimited). Emits `error` when exhausted. |
+
+A keepalive watchdog also catches half-open connections (laptop sleep, Wi-Fi switch, NAT timeout) that never fire a `close` event: if nothing — not even a ping reply — arrives for two `pingIntervalMs` windows, the socket is dropped with code `4000` and the normal reconnect runs. Call `reconnect()` to force a fresh session yourself.
 
 Only unexpected drops reconnect — a `disconnect()` you call yourself does not, and the very first `connect()` still rejects on failure so you can handle initial errors directly. Backoff resets to zero on every successful reconnect. There is **no** periodic re-broadcast: the status is only ever (re)sent on connect, so it is refreshed on every reconnect.
 
@@ -6282,8 +6652,9 @@ console.log('live connection', events.connection);
 
 | Event | Payload | Fired when |
 | --- | --- | --- |
-| `connected` | `{ connectionId }` | The STOMP session is established. |
+| `connected` | `{ connectionId }` | The STOMP session is established (again after every reconnect). |
 | `disconnected` | `{ code, reason }` | The socket closes. |
+| `reconnecting` | `{ attempt, delay }` | An auto-reconnect is scheduled after an unexpected drop. |
 | `friend:message` | `ConnectFriendMessage` | A DM arrives (body decoded to text). |
 | `party:message` | `ConnectPartyMessage` | A party chat message arrives (your own echoes are skipped). |
 | `presence` | `ConnectPresenceUpdate` | A friend's presence changes. |
@@ -6291,21 +6662,26 @@ console.log('live connection', events.connection);
 | `raw` | `{ direction, data }` | Every frame in/out (debugging). |
 | `error` | `Error` | A non-fatal client error. |
 
-An `ERROR` frame with status `4019` (stale connection) triggers an automatic reconnect when `autoReconnect` is left on.
+Once connected, an **unexpected** drop is recovered automatically with exponential backoff (`reconnectInitialDelayMs` 1000, doubling up to `reconnectMaxDelayMs` 30000; `maxReconnectAttempts` 0 = unlimited), and an `ERROR` frame with status `4019` (stale connection) restarts the session immediately. `onConnected` runs again on every reconnect, which is how the session re-applies your custom status. A `disconnect()` you call yourself never reconnects; `reconnect()` forces a fresh session on demand.
+
+Epic refuses server heartbeats on this stream (`4005 Invalid heartbeat`), so a silently dead socket cannot be detected from the socket alone. The session covers this through its 30s presence re-send: when Epic answers `user_is_not_effectively_connected`, the session calls `reconnect()` for you.
 
 ## In-game custom status
 <Badge type="info" text="method" />
 
 ```ts
-setCustomStatus(status: string, options?: { onlineType?: string; signal?: AbortSignal }): Promise<void>
-clearCustomStatus(options?: { signal?: AbortSignal }): Promise<void>
+setCustomStatus(status: string, options?: { onlineType?: string; signal?: AbortSignal }): Promise<EosOwnPresence | null>
+clearCustomStatus(options?: { signal?: AbortSignal }): Promise<EosOwnPresence | null>
+get customStatus(): string | null
 ```
 
-Publish the friend-facing status text that modern Fortnite renders in-game (the line that otherwise reads *"In the launcher"*). This is **EOS presence**, not XMPP: the status string is sent as `activity.value` on an EOS presence `PATCH` tied to your live connect connection, so `setCustomStatus` opens (or reuses) the connect session for you and the status holds only while that session stays open. The value is re-applied automatically on every reconnect; `clearCustomStatus` (or `disconnectEvents` / `logout`) removes it. `onlineType` accepts `online` (default), `away`, or `xa` (extended away).
+Publish the friend-facing status text that modern Fortnite renders in-game (the line that otherwise reads *"In the launcher"*). This is **EOS presence**, not XMPP: the status string is sent as `activity.value` on an EOS presence `PATCH` tied to your live connect connection, so `setCustomStatus` opens (or reuses) the connect session for you and the status holds only while that session stays open. `onlineType` accepts `online` (default), `away`, or `xa` (extended away).
+
+Both calls resolve to the presence Epic stored (`own` from the `PATCH` response), so you can confirm the text landed: `presence.perNs[0].activity.value`. The status survives connection loss — it is re-applied on every reconnect, re-sent every 30s, and if Epic reports the connection gone the session reconnects and retries once. `clearCustomStatus` sends an empty `activity` (omitting it would keep the old text); `disconnectEvents` / `logout` also remove it.
 
 ```ts
-await session.setCustomStatus('Playing with fnapi-js 🚀');
-// ... status shows in-game while the session lives ...
+const presence = await session.setCustomStatus('Playing with fnapi-js 🚀');
+console.log(presence?.perNs[0]?.activity?.value);
 await session.clearCustomStatus();
 ```
 
@@ -6346,21 +6722,44 @@ interface ConnectClientOptions {
   url?: string;
   connectionTimeoutMs?: number;
   autoReconnect?: boolean;
+  reconnectInitialDelayMs?: number;
+  reconnectMaxDelayMs?: number;
+  maxReconnectAttempts?: number;
   debug?: (direction: 'in' | 'out', data: string) => void;
+}
+
+interface EosOwnPresence {
+  accountId: string;
+  status: string;
+  perNs: EosPresenceNamespace[];
+}
+
+interface EosPresenceNamespace {
+  productId?: string;
+  appId?: string;
+  status: string;
+  activity?: { value?: string };
+  ns: string;
+  props: Record<string, string>;
+  conns: Array<{ id: string; props: Record<string, string> }>;
 }
 ```
 
 `CONNECT_WEBSOCKET_URL`, `CONNECT_SUBPROTOCOL`, and `CONNECT_SEC_PROTOCOLS` are exported as constants. The ChatService primitives (`ChatService`, `generateChatKeypair`, `buildSignedMessage`, `decodeMessageBody`, `CHAT_BASE_URL`, `CHAT_MAX_MESSAGE_LENGTH`) are exported for advanced use.
 
-## Node without a global WebSocket
+## WebSocket for the connect stream
 
-Like [`XmppClient`](/epic/xmpp), `ConnectClient` takes an injectable WebSocket factory. On Node without a `WebSocket` global, pass one backed by [`ws`](https://www.npmjs.com/package/ws). Do **not** forward the `protocols` argument to `ws` — Epic negotiates the STOMP subprotocol through the `Sec-WebSocket-Protocol` header (already in `options.headers`), and passing `protocols` makes `ws` demand a server echo Epic never sends, closing the socket with "Server sent no subprotocol":
+The connect stream authenticates with an `Authorization` header on the WebSocket upgrade, which browser and Node global `WebSocket` implementations cannot send. When no factory is passed, `ConnectClient` loads the [`ws`](https://www.npmjs.com/package/ws) package on first connect (it is an optional peer dependency — `npm install ws`; discord.js bots already have it). If `ws` cannot be loaded, `connect()` rejects with a `ConfigurationError`.
+
+To supply your own transport (Tauri, Electron renderer bridges, proxies), pass a factory per call or once for every session through the `connectWebSocket` client option. The factory contract is `(url, protocols, options)` where `protocols` is always `undefined` and `options.headers` carries everything the handshake needs — the bearer, `Epic-Connect-Protocol` and the STOMP subprotocol as a `Sec-WebSocket-Protocol` header. Forward `options.headers` and nothing else: Epic never echoes a negotiated subprotocol, so handing one to `ws` as a constructor argument makes it close the socket with "Server sent no subprotocol".
+
+A failure while the handshake is being written — a socket that closed or timed out before its `open` fired — rejects `connect()` (or triggers the normal reconnect once connected) instead of throwing out of the socket's event handler.
 
 ```ts
 import WebSocket from 'ws';
 
-const events = await session.connectEvents({
-  webSocket: (url, _protocols, options) =>
+const epic = new EpicGamesClient({
+  connectWebSocket: (url, _protocols, options) =>
     new WebSocket(url, { headers: options?.headers }) as never,
 });
 ```
@@ -6437,7 +6836,9 @@ A `TypedEmitter` over `LiveEventMap`. Register listeners with `on` / `once` / `o
 
 | Method | Description |
 | --- | --- |
-| `start()` | Connect + seed. Called for you by `session.live()`; idempotent. |
+| `start()` | Connect + seed. Called for you by `session.live()`; idempotent, and safe to call again if a previous start failed. |
+| `stop()` | Detach from the XMPP / connect channels and clear live state. `session.disconnectLive()` calls it for you. |
+| `running` | `true` between a successful `start()` and `stop()`. |
 | `refreshParty()` | Force a re-fetch of the current party. |
 | `refreshFriends()` | Rebuild the friend cache from the friends list. |
 | `createParty(config?)` | Create a fresh party and set it as `bot.party`. |
@@ -6456,6 +6857,8 @@ A `TypedEmitter` over `LiveEventMap`. Register listeners with `on` / `once` / `o
 | --- | --- | --- |
 | `connected` | `void` | Both transports are up and state is seeded. |
 | `disconnected` | `{ code, reason }` | The XMPP socket closes. |
+| `reconnecting` | `{ attempt, delay }` | XMPP scheduled an auto-reconnect after an unexpected drop. |
+| `reconnected` | `void` | XMPP is back and the party / friend state has been re-seeded. |
 | `error` | `Error` | A non-fatal client/transport error. |
 | `notification` | `DecodedNotification` | Every decoded XMPP notification (before the specific event). |
 | `party:invite` | `PartyInviteEvent` | Someone invites/pings you into their party. |
@@ -6547,19 +6950,15 @@ interface PartyMemberEvent {
 
 `decodeNotification(body)`, the notification-type constants (`PARTY_NOTIFICATION_PREFIX`, `FRIEND_NOTIFICATION_TYPE`, `FRIENDSHIP_REMOVE_TYPE`) and the `DecodedNotification` union are exported for advanced use.
 
-## Node without a global WebSocket
+## WebSockets
 
-`LiveClient` connects the same [`XmppClient`](/epic/xmpp) and [`ConnectClient`](/epic/chat) a session builds, so it inherits their injectable WebSocket factories. On Node without a `WebSocket` global, pass one backed by [`ws`](https://www.npmjs.com/package/ws) through `options.connect` / `options.xmpp`. As with the connect stream, do **not** forward the `protocols` argument to `ws`:
+`LiveClient` connects the same [`XmppClient`](/epic/xmpp) and [`ConnectClient`](/epic/chat) a session builds. XMPP uses the global `WebSocket` (Node 22+, browsers); the connect stream needs header support and loads the [`ws`](https://www.npmjs.com/package/ws) package automatically, so `await session.live()` works with no options on Node. To use your own transports, pass factories through `options.xmpp` / `options.connect`, or set `connectWebSocket` once on the `EpicGamesClient`. When the connect stream cannot attach, `start()` still succeeds over XMPP and emits `error` — set `connectEvents: false` to skip it and read presence through [`session.friendPresences()`](/epic/presence#session-friendpresences).
 
 ```ts
 import WebSocket from 'ws';
 
-const factory = (url, _protocols, options) =>
-  new WebSocket(url, { headers: options?.headers }) as never;
-
 const bot = await session.live({
-  connect: { webSocket: factory },
-  xmpp: { webSocket: factory },
+  xmpp: { webSocket: (url, protocols) => new WebSocket(url, protocols) as never },
 });
 ```
 
@@ -6671,8 +7070,75 @@ interface GiftOptions {
   priceIndex?: number;          // which price row to charge (default 0)
   currencySubType?: string;     // override the currency subtype
   price?: number;               // override the per-receiver price
+  precheck?: boolean;           // check every receiver before sending (default true)
   signal?: AbortSignal;
 }
+```
+
+Before sending, every receiver is checked with the gift-eligibility endpoint. If anyone can't receive the gift, nothing is sent and a [`ShopError`](#shoperror) says why. Pass `precheck: false` to skip the check; a failed gift still throws a `ShopError`.
+
+### checkGift
+<Badge type="info" text="method" />
+
+```ts
+checkGift(target: string | string[]): Promise<GiftEligibility[]>
+```
+
+Checks each receiver without sending anything. Returns one `{ accountId, offerId, eligible, reason, message, price, items }` per receiver; `reason` is a `ShopErrorReason` such as `already-owned`, or `null` when the receiver is eligible.
+
+```ts
+for (const check of await entry.checkGift(['FriendA', 'FriendB'])) {
+  console.log(check.accountId, check.eligible ? 'ok' : check.message);
+}
+```
+
+### purchase
+<Badge type="info" text="method" />
+
+```ts
+purchase(options?: { quantity?: number; priceIndex?: number; price?: number; currency?: string; currencySubType?: string; signal?: AbortSignal }): Promise<PurchaseResult>
+```
+
+Buys the offer for the signed-in account with `PurchaseCatalogEntry`. This **spends V-Bucks**. It resolves to `{ offerId, quantity, totalPrice, items, response }` and throws a `ShopError` such as `not-enough-vbucks` or `already-owned`. `shop.purchase(entryOrName)` does the same from the shop.
+
+## ShopError
+<Badge type="tip" text="class" />
+
+Every gift, purchase, refund and creator-code failure is thrown as a `ShopError` with a readable message:
+
+| Field | Description |
+| --- | --- |
+| `reason` | `not-enough-vbucks`, `already-owned`, `not-friends`, `gifts-disabled`, `recipient-not-eligible`, `gift-limit-reached`, `offer-unavailable`, `refund-unavailable`, `invalid-creator` or `unknown`. |
+| `errorCode` | The raw Epic error code. |
+| `offerId`, `accountIds` | What the failed action was about. |
+| `cause` | The original `EpicApiError`. |
+
+```ts
+try {
+  await entry.gift('FriendName');
+} catch (error) {
+  if (error instanceof ShopError) console.log(error.reason, error.message);
+}
+```
+
+`shopErrorReason(errorCode)` and `toShopError(error, context)` are exported for mapping your own errors.
+
+## Purchases & refunds
+<Badge type="info" text="method" />
+
+```ts
+session.purchaseHistory(): Promise<PurchaseHistory>
+session.refund(purchaseId: string, options?: { quickReturn?: boolean }): Promise<MCPResponse>
+```
+
+`purchaseHistory` reads `mtx_purchase_history` from `common_core`: `{ refundCredits, refundsUsed, tokenRefreshReferenceTime, purchases }`. Purchases are newest first, each with `purchaseId`, `offerId`, `purchaseDate`, `totalMtxPaid`, `freeRefundEligible`, `refundType` and the granted `items`.
+
+`refund` returns a purchase with `RefundMtxPurchase`. Pass `quickReturn: true` for the free 24-hour return, which uses no refund ticket. Failures throw a `ShopError` with reason `refund-unavailable`.
+
+```ts
+const history = await session.purchaseHistory();
+const latest = history.purchases[0];
+if (latest?.freeRefundEligible) await session.refund(latest.purchaseId, { quickReturn: true });
 ```
 
 ## Gifting
@@ -6686,6 +7152,9 @@ The standalone helper behind every gift — reach it with `session.gifting()` or
 | `giftEntry(entry, target, options?)` | Gift a single `ShopEntry`. |
 | `giftEntries(entries, target, options?)` | Gift many entries (alias `giftMany`). |
 | `setReceiveGiftsEnabled(enabled)` | `SetReceiveGiftsEnabled` — toggle whether others can gift you. |
+| `checkEligibility(offer, target)` | Check receivers for any offer id, without sending. |
+| `purchase(offerId, { price })` | Buy a raw offer id for yourself. |
+| `purchaseEntry(entry, options?)` | Buy a `ShopEntry` for yourself. |
 
 ```ts
 const gifting = session.gifting();
@@ -7148,6 +7617,318 @@ interface Receipt {
 ```
 
 `accountId` defaults to the signed-in account on every session convenience method; the V-Bucks and platform methods are self-only and take no `accountId`.
+
+---
+
+# Content Pages & MOTDs
+
+Two sources feed Fortnite's in-game news. The **content pages** (`fortnitecontent-website-prod07`) are a public CMS document holding emergency notices, tournament artwork, lobby backgrounds, shop sections and more — no login needed, exposed as `epic.content`. The personalised **MOTDs** (the news tiles you see in the lobby) come from Epic's PRM dialog service and need an account, so they live on the session as `session.motds()`.
+
+```ts
+import { EpicGamesClient } from 'fnapi-js';
+
+const epic = new EpicGamesClient();
+
+const notices = await epic.content.emergencyNotices();
+const shadowCup = await epic.content.tournament('s42_shadow');
+
+const session = await epic.loginWithDeviceAuth(creds);
+const motds = await session.motds();
+console.log(motds.map((motd) => motd.contentFields.TeaserTitle));
+```
+
+## content.pages / content.page
+<Badge type="info" text="method" />
+
+```ts
+pages(key?: ContentPageKey | string, options?: ContentPageOptions): Promise<ContentPage>
+page<T>(key: ContentPageKey | string, subKey: string, options?: ContentPageOptions): Promise<T>
+```
+
+`pages` returns the whole document for `'fortnite-game'` (default) or `'fortnite-editor'` (UEFN). Every top-level section carries `_title`, `_templateName`, `_activeDate` and `lastModified`. `page` fetches one section by its lowercase `_title` — `shopSections` has the title `shop-sections`, so that is the sub key.
+
+`ContentPageOptions`: `lang` (default `en`), `signal`, and `cache`. Content pages are cached for 60 seconds by default, so calling several accessors in a row costs one request; pass `cache: false` to force a fresh read or `cache: { ttl }` to change the window.
+
+## Typed accessors
+<Badge type="info" text="method" />
+
+```ts
+emergencyNotices(options?): Promise<ContentEmergencyNotice[]>
+motds(options?): Promise<ContentMotd[]>
+tournaments(options?): Promise<ContentTournament[]>
+tournament(displayId: string, options?): Promise<ContentTournament | null>
+backgrounds(options?): Promise<ContentBackground[]>
+shopSections(options?): Promise<ContentShopSection[]>
+loginMessage(options?): Promise<ContentLoginMessage | null>
+```
+
+| Accessor | Section | Notes |
+| --- | --- | --- |
+| `emergencyNotices` | `emergencynoticev2` | Downtime / incident banners; each has `title`, `body`, `hidden` and optional `platforms` / `gamemodes`. Empty when nothing is posted. |
+| `motds` | `battleroyalenewsv2` | The legacy CMS MOTDs. Epic now serves lobby MOTDs from PRM — use [`session.motds()`](#session-motds) for the live tiles. |
+| `tournaments` / `tournament` | `tournamentinformation` | Display info for every tournament: titles, descriptions, poster/tile/background images and colours, keyed by `tournament_display_id`. |
+| `backgrounds` | `dynamicbackgrounds` | Lobby and vault background images with their `stage`. |
+| `shopSections` | `shopSections` | Shop section ids, display names, landing priority and visibility flags. |
+| `loginMessage` | `loginmessage` | `null` unless Epic has a login message up. |
+
+Every section not covered here is still on the raw `pages()` result.
+
+## session.motds
+<Badge type="info" text="method" />
+
+```ts
+motds(options?: MotdOptions): Promise<MotdItem[]>
+```
+
+Posts the PRM `channel/motd/target` request for the signed-in account and returns its `contentItems` (an empty array when Epic answers `204`). `MotdOptions`: `channel` (default `motd`), `tags` (default `['Product.BR']`; use e.g. `Product.Juno` or `Product.DelMar` for other modes) and `parameters` merged over `{ platform: 'Windows', language: 'en', serverRegion: 'NAE', country: 'US' }`.
+
+Each `MotdItem` has a `contentHash`, `contentSchemaName` (`DynamicMotd`), `placements` (tracking id, tag, position) and `contentFields`: `TeaserTitle`, `FullScreenTitle`, `FullScreenBody`, `TeaserBackground` / `FullScreenBackground` (sized `Image[]` plus an optional `Video`) and `Buttons` with their `Action`.
+
+`MotdManager` is also exposed as `epic.motd.target(accessToken, options)` for use with your own token.
+
+---
+
+# Islands (Content Service)
+
+UEFN islands are published through Epic's content service (`content-service.bfda`). The session wraps the three calls that matter — the cooked package for an island code, its AES key, and launching it on the account — and handles the parts that usually trip people up: the service only accepts a **Valkyrie (UEFN) client** token, the package lookup needs the **client build** major / minor / changelist, and the key comes back base64 while every tool wants hex.
+
+```ts
+const session = await epic.loginWithDeviceAuth(creds);
+
+const keys = await session.islandKeys('7865-8305-9184');
+console.log(keys[0]?.guid, keys[0]?.key); // 92431145-... 0x2F7A955B...
+```
+
+::: tip No setup
+The Valkyrie token is minted from the session through an exchange code and cached like the launcher token. The build is read from the launcher's live Fortnite build (cached for five minutes) — the CL the server reports at `/fortnite/api/version` is a different number and the content service rejects it.
+:::
+
+## session.islandPackage
+<Badge type="info" text="method" />
+
+```ts
+islandPackage(linkCode: string, options?: CookedPackageOptions & { build?: { major; minor; changelist } }): Promise<CookedContentPackage>
+```
+
+Returns the v4 cooked content package: `status`, `projectId`, `projectFlags` (title, owner, `liveLink` with its version and publish date), every `content` module with its `binaryVersion` and plugin URIs, `isEncrypted`, and `resolved.root` — the module id and version the key belongs to. `options.platform` (default `windows`) and `options.role` (default `client`) pass through; `options.build` skips the launcher lookup.
+
+## session.islandKeys
+<Badge type="info" text="method" />
+
+```ts
+islandKeys(linkCode: string, options?): Promise<IslandKey[]>
+```
+
+Fetches the package and, if it is encrypted, posts the root module to `module/key/batch`. Each `IslandKey` has `moduleId`, `version`, `guid`, the raw `keyBase64` and `key` — the same key as `0x`-prefixed upper-case hex, ready for FModel or CUE4Parse. An unencrypted island returns `[]`.
+
+## session.launchIsland
+<Badge type="info" text="method" />
+
+```ts
+launchIsland(linkCode: string, options?: { signal?: AbortSignal }): Promise<IslandLaunchResult>
+```
+
+Sends the island to the account's game client. `status` is `notified` when Fortnite is running and switched to it, or `queued` when it will load on the next launch.
+
+## ContentServiceManager
+<Badge type="tip" text="class" />
+
+`epic.contentService` exposes the raw calls for your own Valkyrie token: `cookedPackage(token, linkCode, build, options?)`, `moduleKeys(token, modules)` and `launch(token, linkCode)`. The helpers `parseFortniteBuild(buildVersion)`, `contentKeyToHex(base64)` and `toIslandKey(entry)` are exported too.
+
+---
+
+# Islands & Links
+
+Every island, playlist and mode set in Fortnite is a **link** in Epic's Links service (`links-public-service-live`). The session looks links up by code and flattens each one into an `Island` summary:
+
+- title, tagline and description, localized when you pass a `locale`
+- the creator
+- version and state
+- tags and genres
+- player counts
+- images
+- age ratings
+
+The session can also list a creator's published islands through the Discovery service and every link on your own account.
+
+```ts
+const session = await epic.loginWithDeviceAuth(creds);
+
+const island = await session.island('8567-1055-6605');
+console.log(island?.title, 'by', island?.creator.name, island?.players.max);
+
+const trios = await session.island('playlist_trios');
+console.log(trios?.type); // 'BR:Playlist'
+```
+
+All calls need an account-bound session.
+
+## island
+<Badge type="info" text="method" />
+
+```ts
+island(code: string, options?: { type?: string; version?: number; includeActivationHistory?: boolean; locale?: string }): Promise<Island | null>
+```
+
+Looks up one island or playlist code. It resolves to `null` when the code has no active version or does not exist. Pass `version` for an older published version.
+
+## islands
+<Badge type="info" text="method" />
+
+```ts
+islands(codes: Array<string | { mnemonic: string; type?: string; version?: number }>, options?: { locale?: string }): Promise<Island[]>
+```
+
+Looks up many codes at once, in chunks of 100. Codes that fail to resolve are skipped, so the result can be shorter than the input.
+
+## islandRelated
+<Badge type="info" text="method" />
+
+```ts
+islandRelated(code: string, options?: { version?: number }): Promise<LinkRelated>
+```
+
+Returns the link with its parents and children: `{ parentLinks, links }`. For example, `playlist_trios` sits under the `set_br_playlists` mode set, and a set lists its `sub_link_codes`.
+
+## islandVersions
+<Badge type="info" text="method" />
+
+```ts
+islandVersions(code: string, options?: { locale?: string }): Promise<Island[]>
+```
+
+Returns every published version of a link, newest first.
+
+## creatorIslands
+<Badge type="info" text="method" />
+
+```ts
+creatorIslands(creatorAccountId: string, options?: { limit?: number; olderThan?: string }): Promise<CreatorPage>
+```
+
+Returns a creator's published links from the Discovery service: `{ creatorId, links: [{ linkCode, globalCCU, isFavorite, lockStatus, isVisible }], hasMore }`. `limit` is at most 100. Page with `olderThan`, passing the last `lastActivatedDate`. To get full details, pass the codes to `islands`:
+
+```ts
+const page = await session.creatorIslands(island.creator.accountId);
+const details = await session.islands(page.links.map((link) => link.linkCode));
+```
+
+## myIslands
+<Badge type="info" text="method" />
+
+```ts
+myIslands(options?: { locale?: string }): Promise<Island[]>
+```
+
+Returns every link owned by the signed-in account, including private playtest links. The service only allows an account to list its own links.
+
+## Island
+
+| Field | Description |
+| --- | --- |
+| `code`, `type` | Link code and type, e.g. `valkyrie:application`, `BR:Playlist`, `ModeSet`. |
+| `title`, `tagline`, `description` | Display text, localized when `locale` is passed. |
+| `creator` | `{ accountId, name }`. Epic's own links use `epic`. |
+| `version`, `active`, `state`, `moderationStatus`, `discoveryIntent` | Publishing state. |
+| `tags`, `genres`, `mode` | Description tags, genres and the link mode. |
+| `players` | `{ min, max }` from the matchmaking settings. |
+| `image`, `images` | The full-size image and every size (`url`, `url_m`, `url_s`, `url_xs`). |
+| `ratings` | Age rating per board, e.g. `{ ESRB: 'ESRB_TEEN' }`. |
+| `supportCode`, `projectId` | Creator code and UEFN project. |
+| `createdAt`, `publishedAt`, `updatedAt`, `lastActivatedAt` | Timestamps. |
+| `link` | The raw `LinkMnemonic`. |
+
+## LinksManager
+<Badge type="tip" text="class" />
+
+`epic.links` is the low-level client. Each method takes an access token:
+
+- `mnemonic`
+- `mnemonics`
+- `related`
+- `versions`
+- `author`
+- `creatorPage`
+
+`toIsland(link, locale?)` turns a raw link into an `Island`.
+
+---
+
+# Launcher & Build Info
+
+Everything needed to watch Fortnite builds: the server version, the live client build from the launcher, platform assets with their manifests, and the launcher installers.
+
+```ts
+const version = await epic.game.version();
+console.log(version.version, version.cln);
+
+const session = await epic.loginWithDeviceAuth(creds);
+const build = await session.fortniteBuild();
+console.log(build.version, build.changelist, build.buildVersion);
+```
+
+## game.version
+<Badge type="info" text="method" />
+
+```ts
+epic.game.version(options?: { signal?: AbortSignal }): Promise<FortniteVersion>
+session.fortniteVersion(options?): Promise<FortniteVersion>
+```
+
+`/fortnite/api/version` — no login. Returns the **server** build: `version` (`42.30`), `cln`, `build`, `branch`, `buildDate`, `serverDate` and `moduleName`. The server changelist is usually ahead of the client build; use `fortniteBuild` when you need the version players actually download.
+
+## session.fortniteBuild
+<Badge type="info" text="method" />
+
+```ts
+fortniteBuild(options?: LauncherBuildOptions): Promise<FortniteBuild>
+```
+
+Reads the live Windows build from the launcher and parses it into `{ buildVersion, version, major, minor, changelist, branch }`. Cached for five minutes; pass `cache: false` to bypass.
+
+## session.launcherBuild / session.launcherAssets
+<Badge type="info" text="method" />
+
+```ts
+launcherBuild(options?: LauncherBuildOptions): Promise<LauncherBuild>
+launcherAssets(options?: { platform?; namespace?; label?; signal?; cache? }): Promise<LauncherAsset[]>
+```
+
+`launcherBuild` returns the v2 build elements for an app — `buildVersion`, `hash`, `labelName` and the signed `manifests` (CDN uri plus token query params). `LauncherBuildOptions`: `platform` (default `Windows`), `namespace` (`fn`), `catalogItemId` (Fortnite's `4fe75bbc5a674f4f9b356b5c90567da5`), `appName` (`Fortnite`), `label` (`Live`), `signal`, `cache`. `launcherAssets` lists every app in a namespace on a platform with its current `buildVersion`.
+
+Both need a launcherApp token, which the session mints and caches for you. `epic.launcher` exposes the same calls for your own token.
+
+## session.fortniteApk
+<Badge type="info" text="method" />
+
+```ts
+fortniteApk(options?: Omit<LauncherBuildOptions, 'platform'>): Promise<LauncherApk>
+```
+
+The direct Fortnite APK for the live Android build: `{ buildVersion, manifestId, url, sizeBytes }`, where `url` is `https://epicgames-download1.akamaized.net/Builds/Fortnite/Apk/<manifestId>.apk`. `apkFromBuild(element)` derives the same from any Android build element. There is no iOS equivalent — Epic answers `download_info_not_found` for an iOS app binary.
+
+## Platforms and device profiles
+
+`launcherBuild` uses `GET` unless a device profile is given. Android only answers to a `POST` describing the device (`compatible_build_not_found` otherwise), so `platform: 'Android'` sends the built-in `ANDROID_DEVICE_PROFILE` automatically; pass `device` to send your own. iOS has no downloadable build on this endpoint.
+
+## session.launcherAsset
+<Badge type="info" text="method" />
+
+```ts
+launcherAsset(options?: { platform?; catalogItemId?; appName?; label?; signal?; cache? }): Promise<LauncherAppAsset>
+```
+
+The v1 single-app endpoint (`/launcher/api/public/assets/{platform}/{catalogItemId}/{appName}`). It returns one object — `buildVersion`, `expires` and `items` keyed by `MANIFEST` / `CHUNKS`, each with `distribution`, `path`, `signature`, optional `hash` and `additionalDistributions`. It answers for Windows and Switch; Mac, iOS and Android return 404 here with a launcher token.
+
+## launcher.installer
+<Badge type="info" text="method" />
+
+```ts
+epic.launcher.installer(app: LauncherInstaller | string): Promise<LauncherInstallerDownload>
+epic.launcher.installerUrl(app: LauncherInstaller | string): string
+```
+
+No login. `installer` follows Epic's redirect without downloading and returns the real file `url` and `fileName`; `installerUrl` builds the redirecting API url. `LauncherInstaller` lists the known apps: `LauncherWindows`, `LauncherMac`, `UnrealEngineWindows`, `UnrealEngineMac`, `EpicGamesStoreAndroid` (the Epic Games Store app — for the Fortnite APK use [`fortniteApk`](#session-fortniteapk)) and `BuildPatchTool`.
 
 ---
 
@@ -7667,7 +8448,7 @@ fortniteapi.com publishes no error schema, so failures surface as the package's 
 `FnccAPI` wraps **fn-api.cc** (`https://prod.fn-api.cc`) — a CUE4Parse-backed dataset service that surfaces Fortnite cosmetics, banners, OG sprites, AES keys, `.usmap` mappings, raw asset exports, and a live image renderer. Every route sits under a `/v1` prefix and needs **no API key**.
 
 ::: warning A different service
-fn-api.cc is its own service — not fortnite-api.com ([`FortniteAPI`](/fortnite/fortnite-api)) nor fortniteapi.com ([`DillyAPI`](/dilly/dilly)). Cosmetic/banner/sprite list routes return the `{ status, data }` envelope (unwrapped for you); status, game, search, and asset routes return their bodies **raw**. Shapes are typed from live-sampled responses.
+fn-api.cc is its own service — not fortnite-api.com ([`FortniteAPI`](/fortnite/fortnite-api)) nor fortniteapi.com ([`DillyAPI`](/dilly/dilly)). Most routes return the `{ status, data }` envelope (unwrapped for you); status, game, search, asset, and lookup routes return their bodies **raw**. Every type is checked field-for-field against the live API by `tests/live/fncc.test.ts` — a missing, mistyped, or new field fails that suite.
 :::
 
 ```ts
@@ -7710,7 +8491,7 @@ aes(options?: FnccBaseOptions): Promise<FnccAes>
 mappings(options?: FnccBaseOptions): Promise<FnccMappings>
 ```
 
-The tracked build (`gameVersion`, `datasetBuild`, per-category counts), the current AES keys (`mainKey` + `dynamicKeys[]`), and the active `.usmap` mappings file. `fncc.version()`/`fncc.aes()`/`fncc.mappings()` are flat shortcuts for the `game.*` methods.
+The tracked build (`gameVersion`, the `cleanBuild` people call the version such as `42.30`, `changelist`, `branch`, `datasetBuild`, per-category counts), the current AES keys (`mainKey` + `dynamicKeys[]`), and the active `.usmap` mappings file. `fncc.version()`/`fncc.aes()`/`fncc.mappings()` are flat shortcuts for the `game.*` methods.
 
 ```ts
 const aes = await fncc.aes();
@@ -7722,20 +8503,36 @@ console.log(aes.mainKey, aes.dynamicKeys.length);
 
 ```ts
 all(options?: FnccBaseOptions): Promise<FnccCosmeticsByCategory>
+searchAll(options: FnccCosmeticSearchOptions): Promise<FnccCosmeticSearchAllResponse>
 categories(options?: FnccBaseOptions): Promise<FnccCosmeticCategories>
+types(options?: FnccBaseOptions): Promise<FnccCosmeticType[]>
 category(category: string, options?: FnccBaseOptions): Promise<FnccCosmetic[]>
 get(category: string, id: string, options?: FnccBaseOptions): Promise<FnccCosmetic>
 search(category: string, options?: FnccCosmeticSearchOptions): Promise<FnccCosmeticSearchResponse>
 ```
 
-`all` returns every category keyed by name; `categories` is the name → count map; `category` pulls one category's array; `get` fetches a single cosmetic by category + id. `search` filters within a category by `name`, `id`, `type`, `rarity`, `series`, `set`, `artist`, `album`, `introduction`, plus `matchMethod`/`limit`/`offset`, and keeps the `total` alongside `data`. A blank `category` or `id` throws `ValidationError` before any request.
+`all` returns every category keyed by name (tens of megabytes); `searchAll` searches every category at once and returns a flat page where each hit carries its `category` — it requires at least one filter so it never falls back to the full dump. `categories` is the name → count map; `types` lists every cosmetic type with its locker icon and item count. `category` pulls one category's array and `get` fetches one item by id or exact display name (`get` also carries `media` — a turntable video / audio preview — and `images.render` when Epic has one).
+
+Filters: `search` (name, id, description, artist, type, series and set at once), `name`, `description`, `id`, `artist`, `album`, `type`, `rarity`, `series`, `set`, `introduction`, plus `matchMethod` (`contains` | `full` | `starts` | `ends`), `limit`, `offset`. A blank `category` or `id` throws `ValidationError` before any request.
+
+Two categories have their own item shape and the overloads type them for you: `'tracks'` returns `FnccTrack` (jam tracks: `title`, `artist`, `bpm`, `difficulty`, `albumArt`, …) and `'beans'` returns `FnccBean` (Fall Guys). Every other category returns `FnccCosmetic`.
 
 ```ts
 const categories = await fncc.cosmetics.categories();
-const cars = await fncc.cosmetics.category('cars');
-const renegade = await fncc.cosmetics.get('br', 'CID_028_Athena_Commando_F');
-const hits = await fncc.cosmetics.search('br', { rarity: 'legendary', limit: 20 });
+const hits = await fncc.cosmetics.searchAll({ search: 'hiroshi', limit: 10 });
+const tracks = await fncc.cosmetics.category('tracks');
+const trooper = await fncc.cosmetics.get('br', 'CID_017_Athena_Commando_M');
+console.log(trooper.images.render, trooper.rarity?.hexColors);
 ```
+
+## rarities
+<Badge type="info" text="endpoint" /> `fncc.rarities`
+
+```ts
+list(options?: FnccBaseOptions): Promise<FnccRarityTier[]>
+```
+
+Every rarity tier with the game's own colours (`colors`, `hexColors`), the card `gradient` numbers, the rendered `image` and real `card`, and how many `cosmetics` / `weapons` carry it. Every embedded `rarity` object on cosmetics, banners and shop items has the same colour fields.
 
 ## banners
 <Badge type="info" text="endpoint" /> `fncc.banners`
@@ -7755,7 +8552,7 @@ list(options?: FnccSpritesOptions): Promise<FnccSpritesResponse>
 get(id: string, options?: FnccBaseOptions): Promise<FnccSprite>
 ```
 
-OG sprite data (dex number, species, perks, variants). `list` accepts `enabled` and `library` filters and keeps `count`/hotfix metadata on the envelope; `get` resolves one sprite by id (blank id throws `ValidationError`).
+Extraction sprites with perks, variants, spawn rules (`spawn`) and how each is obtained (`acquisition`). `enabled` reflects Epic's live hotfix. `list` accepts `enabled` and `library` filters and keeps `count`, `hotfixAppliedAt` and the `hotfixRules` count on the envelope; `get` resolves one sprite by registry or mapping id (blank id throws `ValidationError`).
 
 ## search
 <Badge type="info" text="endpoint" /> `fncc.search`
@@ -7765,7 +8562,7 @@ paths(query: string, options?: FnccPageOptions): Promise<FnccPage<FnccSearchHit>
 content(query: string, options?: FnccContentSearchOptions): Promise<FnccContentSearchResult>
 ```
 
-`paths` searches asset paths by substring with `offset`/`limit` paging. `content` searches inside asset bytes, scoped by `prefix`/`extension` and bounded by `maxFiles`/`timeBudgetMs` (`ignoreCase` optional). Both require a non-empty `query`.
+`paths` searches asset paths by substring with `offset`/`limit` paging. `content` searches inside asset bytes (UTF-8 and UTF-16), scoped by `prefix`/`extension` and bounded by `maxFiles`/`timeBudgetMs` (`ignoreCase` optional); each item carries `matchCount` and `matches[]` with the surrounding `text`, byte `offset` and `encoding`, and the result reports `scanned`, `hits` and whether it was `truncated`. Both require a non-empty `query`.
 
 ```ts
 const page = await fncc.search.paths('renegade', { limit: 20 });
@@ -7778,18 +8575,28 @@ console.log(page.total, page.items[0]?.path);
 ```ts
 list(options?: FnccAssetsListOptions): Promise<FnccPage<FnccAssetEntry>>
 search(query: string, options?: FnccPageOptions): Promise<FnccPage<FnccAssetEntry>>
-exports(path: string, options?: FnccBaseOptions): Promise<FnccAssetExport[]>
+paths(options?: FnccAssetPathsOptions): Promise<FnccPage<string>>
+pathsTextUrl(options?: FnccAssetPathsOptions): string
+fixPath(path: string, options?: FnccBaseOptions): Promise<FnccFixedPath>
+fixPaths(paths: string[], options?: FnccBaseOptions): Promise<FnccFixedPath[]>
+exports(path: string, options?: FnccBaseOptions): Promise<string[]>
 json<T>(path: string, name?: string, options?: FnccBaseOptions): Promise<T>
 package(path: string, options?: FnccBaseOptions): Promise<FnccAssetPackage>
 archives(options?: FnccBaseOptions): Promise<FnccArchive[]>
 rawUrl(path: string): string
 ```
 
-`list`/`search` page the asset index (`prefix`/`extension` filters on `list`). `exports` returns the export table for a `.uasset`; `json` pulls a parsed export (optionally a single named export); `package` returns the package's dependency map; `archives` lists mounted paks. `rawUrl` builds the raw-bytes download URL without sending a request. The `path`/`query` arguments are validated non-empty.
+`list`/`search` page the asset index; each entry has `path`, `extension`, `size` and the `archiveName` it lives in. `paths` pages bare path strings (`q`, `prefix`, `extension`); for a full dump use `pathsTextUrl`, which points at the newline-separated text stream (`limit: 0` streams every match).
+
+`fixPath` turns any file, game or object path into the object path the game uses (`/Game/...Name.Name`) with its `class`, `archive` and `exports`; `fixPaths` resolves a batch in one POST and keeps input order — unknown paths come back with `found: false` and an `error`.
+
+`exports` returns the export names (`"Name (Class)"`); `json` pulls the parsed exports (optionally a single named one); `package` maps each package segment (`.uasset`/`.uexp`/`.ubulk`) to its base64 bytes; `archives` lists every pak/utoc with its encryption key guid and mount state. `rawUrl` builds the raw-bytes download URL without sending a request. The `path`/`query` arguments are validated non-empty.
 
 ```ts
-const exports = await fncc.assets.exports('FortniteGame/Content/Athena/Items/.../CID_028');
-const parsed = await fncc.assets.json<{ Name: string }>('FortniteGame/Content/.../CID_028');
+const cid = 'FortniteGame/Plugins/GameFeatures/BRCosmetics/Content/Athena/Items/Cosmetics/Characters/CID_017_Athena_Commando_M';
+const exports = await fncc.assets.exports(cid);
+const fixed = await fncc.assets.fixPath(`${cid}.uasset`);
+console.log(fixed.objectPath, fixed.class);
 ```
 
 ## images
@@ -7799,7 +8606,7 @@ const parsed = await fncc.assets.json<{ Name: string }>('FortniteGame/Content/..
 url(options: FnccImageOptions): string
 ```
 
-Builds an absolute URL to fn-api.cc's on-the-fly image renderer for an asset `path` (optional `name`, `format`, `maxSize`). Pure string builder — it never sends a request. A blank `path` throws `ValidationError`.
+Builds an absolute URL to fn-api.cc's on-the-fly image renderer for an asset `path` (optional `name`, `format` — `png` | `jpeg` | `webp` | `tga` — and `maxSize`). Pure string builder — it never sends a request. A blank `path` throws `ValidationError`.
 
 ```ts
 const src = fncc.images.url({ path: 'FortniteGame/Content/.../CID_028', format: 'png', maxSize: 512 });
@@ -7814,7 +8621,7 @@ categories(options?: FnccBaseOptions): Promise<FnccWeaponFilters>
 get(id: string, options?: FnccWeaponOptions): Promise<FnccWeapon>
 ```
 
-`list` keeps the `{ total, count, data }` envelope and filters by `search`, `category`, `rarity`, `ammo`, `trigger`, `type`, `tag`, `ranged`, `melee`, `hasIcon`, `hasStats`, `sort`, `order`, `limit`, `offset`. `categories` returns the filter facet counts; `get` unwraps a single weapon (`includeRaw` adds the raw asset export).
+`list` keeps the `{ total, count, data }` envelope and filters by `search`, `category`, `rarity`, `ammo`, `trigger`, `type`, `tag`, `ranged`, `melee`, `hasIcon`, `hasStats`, `sort`, `order`, `limit`, `offset`. `categories` returns the filter facet counts; `get` unwraps a single weapon (`includeRaw` attaches the untouched balance row as `stats.raw`). `rarity` is a plain string (`Legendary`), `tier` a number, and `stats` — damage per range band, DPS, fire rate, clip, reload, spread and recoil — is `null` for the few definitions with no balance row.
 
 ```ts
 const ars = await fncc.weapons.list({ rarity: 'legendary', ranged: true, limit: 10 });
@@ -7829,7 +8636,7 @@ list(options?: FnccFishOptions): Promise<FnccFish[]>
 get(id: string, options?: FnccBaseOptions): Promise<FnccFish>
 ```
 
-`list` filters by `search`, `rarity`, `enabled`, `needsProFishingRod`; `get` unwraps a single fish by id.
+`list` filters by `search`, `rarity`, `enabled`, `needsProFishingRod`; `get` unwraps a single fish by id, asset name or display name. `rarity` is a plain string (`rare`); `image`/`smallImage` are texture paths you can render with [`images.url`](#images).
 
 ## itemshop
 <Badge type="info" text="endpoint" /> `fncc.itemshop`
@@ -7839,7 +8646,22 @@ current(options?: FnccItemShopOptions): Promise<FnccItemShop>
 sections(options?: FnccBaseOptions): Promise<FnccItemShopSections>
 ```
 
-`current` returns the live shop with `offerCount`/`resetsAt` metadata and every `FnccShopOffer` in `data` (`section` filter narrows it). `sections` lists the shop's layout sections.
+`current` returns the live shop with `offerCount`/`resetsAt`/`catalogExpiresAt` metadata and every `FnccShopOffer` in `data` (`section` filter narrows it). Each offer carries its `price` (regular, final, discount, sale type), tile `colors`, `layout`, resolved `items` (name, rarity, series, CDN images), `bundle` details and `media` previews. `sections` lists the layout sections with their offer groups and stack ranks.
+
+## bundles
+<Badge type="info" text="endpoint" /> `fncc.bundles`
+
+```ts
+list(options?: FnccBundlesOptions): Promise<FnccBundlesResponse>
+get(id: string, options?: FnccBaseOptions): Promise<FnccBundle>
+```
+
+Shop bundles recorded every rotation: items with per-item prices, the bundle price, `firstSeen`/`lastSeen` and `occurrences`. `list` filters by `q`, `item`, `seen`, `inShop` with `limit`/`offset`; `get` accepts a bundle id, storefront bundle id, display asset or exact name.
+
+```ts
+const inShop = await fncc.bundles.list({ inShop: true });
+const wayne = await fncc.bundles.get('NoiseClue_Bundle');
+```
 
 ## playlists
 <Badge type="info" text="endpoint" /> `fncc.playlists`
@@ -7849,7 +8671,109 @@ list(options?: FnccPlaylistsOptions): Promise<FnccPlaylist[]>
 get(id: string, options?: FnccPlaylistOptions): Promise<FnccPlaylist>
 ```
 
-`list` filters by `gameType`, `tag`, `tournament`, `ranked`, `limitedTime`, `default`, `fetchImages`; `get` pulls one playlist (`fetchImages` attaches the rendered images).
+`list` filters by `gameType`, `tag`, `tournament`, `ranked`, `limitedTime`, `default`, `fetchImages`; `get` pulls one playlist by id or display name (`fetchImages` resolves `images.cover`). Each playlist carries its `lootPool` summary, `parentExperience` mnemonic, structured `matchmaking` config and an `added` timestamp.
+
+## lootpool
+<Badge type="info" text="endpoint" /> `fncc.lootpool`
+
+```ts
+list(options?: FnccBaseOptions): Promise<FnccLootPoolSummary[]>
+all(options?: FnccBaseOptions): Promise<FnccLootPoolWithContainers[]>
+search(options?: FnccLootSearchOptions): Promise<FnccLootSearchResponse>
+item(itemId: string, options?: FnccBaseOptions): Promise<FnccLootHit[]>
+get(id: string, options?: FnccBaseOptions): Promise<FnccLootPool>
+containers(id: string, options?: FnccBaseOptions): Promise<FnccLootPoolContainers>
+container(id: string, container: string, options?: FnccBaseOptions): Promise<FnccLootContainer>
+```
+
+Loot pools resolved from the game's tier and package tables with live hotfixes applied — one entry per real pool, not per playlist. `get` returns a pool with its tables, playlists, hotfixes and every container's items and drop `chance`; `containers` lists the containers with item counts; `container` drills into one. `search` matches items across every pool (`q`, `item`, `container`, `experience`, `map`, `rarity`, `zeroBuild`, `ranked`, `minChance`) ordered by drop chance; `item` lists every pool and container one item drops from. `all` is the full breakdown of every pool — a large response.
+
+```ts
+const shotguns = await fncc.lootpool.search({ q: 'shotgun', experience: 'br', limit: 10 });
+const floor = await fncc.lootpool.container('br-athenacompositelp', 'Loot_AthenaFloorLoot');
+```
+
+## seasons
+<Badge type="info" text="endpoint" /> `fncc.seasons`
+
+```ts
+list(options?: FnccBaseOptions): Promise<FnccSeason[]>
+get(season: string | number, options?: FnccBaseOptions): Promise<FnccSeason>
+current(options?: FnccBaseOptions): Promise<FnccSeason>
+```
+
+Every season mapped to its chapter and display name; `current`, `gameName` and `storefront` follow the live build. `get` takes a season number, a display name or `'current'`.
+
+## battlepasses
+<Badge type="info" text="endpoint" /> `fncc.battlepasses`
+
+```ts
+list(options?: FnccBaseOptions): Promise<FnccBattlePass[]>
+get(pass: string | number, options?: FnccBaseOptions): Promise<FnccBattlePass>
+```
+
+Every season pass in the build (Battle Pass, Music Pass, LEGO Pass, OG Pass) with its offer ids and reward track grouped into `categories`; each reward has its `tier`, `cost` and pass `currency`, joined to the cosmetic catalogue for name, rarity and images. `get` takes an asset id, season number or a name like `'Music Pass'`.
+
+## modes
+<Badge type="info" text="endpoint" /> `fncc.modes`
+
+```ts
+list(options?: FnccBaseOptions): Promise<FnccModes>
+get(id: string, options?: FnccBaseOptions): Promise<FnccMode>
+```
+
+Game modes (Battle Royale, Reload, Blitz, OG) with their maps — internal `code` plus the `name` players see — what is `inRotation`, the rotation schedule with playlist `substitutions`, and where a mode or map is forced on or off. `list` also returns the current `season` window.
+
+```ts
+const { modes } = await fncc.modes.list();
+const reload = await fncc.modes.get('reload');
+```
+
+## quests
+<Badge type="info" text="endpoint" /> `fncc.quests`
+
+```ts
+catalog(options?: FnccQuestCatalogOptions): Promise<FnccQuestCatalog>
+categories(options?: FnccQuestFilterOptions): Promise<FnccQuestCategories>
+bundles(options?: FnccQuestFilterOptions): Promise<FnccQuestBundles>
+stw(options?: FnccQuestTextOptions): Promise<FnccStwQuests>
+get(templateId: string, options?: FnccQuestTextOptions): Promise<FnccQuestEntry>
+lookup(templateIds: string[], options?: FnccQuestTextOptions): Promise<FnccQuestLookup>
+```
+
+The quest data from the game files, extracted once per Fortnite build:
+
+- **Quests:** names, objective text and targets, sort priority, category tags and visibility.
+- **Challenge bundles:** their tags and quests in order.
+- **Quest page categories:** names, sort order, include tags and headers, plus the mode each belongs to.
+- **Save the World:** STW quests and STW categories.
+
+`catalog` returns everything in one response, and the other methods return one part. Every map key and `templateId` is lowercase.
+
+Each quest also carries a few extra fields:
+
+- `includedInCategories`: `false` for hidden tracker quests.
+- `canShowInPostMatch`
+- `completionText`
+- on each objective, `displayStage` and `displayMaxStage`, for "step 1 of 4" chains. This is what [`QuestCatalog`](/epic/quests) loads.
+
+| Option | Description |
+| --- | --- |
+| `lang` | Language for every text field (default `en`). |
+| `mode` | One mode or a list, e.g. `'festival'` or `['battle-royale', 'reload']`. Keeps only those categories and the quests and bundles in them. |
+| `includeDisabled` | Also return categories the game has switched off, marked `enabled: false`. |
+| `excludeHidden` | Leave out quests the game never shows (`visibleToPlayers: false` or `includedInCategories: false`). |
+| `sections` | `catalog` only: return only some of `quests`, `bundles`, `categories`, `stwQuests`, `stwCategories`. |
+| `ids` | `catalog` only: return only these quest template ids. |
+| `rewards` | Include each quest's resolved rewards. |
+
+`get` returns one BR, mode or STW quest, with `source: 'athena' | 'stw'`, and throws `NotFoundError` for unknown ids. `lookup` resolves many ids at once, in batches of 1000, and lists any it couldn't find in `missing`.
+
+```ts
+const { categories } = await fncc.quests.categories({ mode: 'festival' });
+const quest = await fncc.quests.get('Quest:quest_s42_weekly_w07_q01');
+const { quests, missing } = await fncc.quests.lookup(['Quest:quest_s42_weekly_w07_q01', 'quest:reactivequest_flingers']);
+```
 
 ## news
 <Badge type="info" text="endpoint" /> `fncc.news`
@@ -7880,17 +8804,18 @@ byName(name: string, options?: FnccLookupOptions): Promise<FnccLookupResponse>
 byAccountId(accountId: string, options?: FnccLookupOptions): Promise<FnccLookupResponse>
 ```
 
-Account lookup by `name`, `accountId`, `platform`, or free-text `search`. The envelope splits `exact` from `more` matches with their counts. `byName`/`byAccountId` are validated convenience wrappers.
+Account lookup by `name` (with `platform`: `epic` | `psn` | `xbl` | `steam` | `nsw`) or `accountId` (one id or several comma-separated); `search: true` skips the exact-match step. The envelope splits `exact` from `more` matches with their counts, and each match carries its linked `externalAuths`. `byName`/`byAccountId` are validated convenience wrappers. Lookups resolve against Epic live and share a much tighter rate limit than other routes.
 
 ## mnemonic
 <Badge type="info" text="endpoint" /> `fncc.mnemonic`
 
 ```ts
 list(options?: FnccMnemonicListOptions): Promise<FnccMnemonic[]>
-get(mnemonic: string, options?: FnccMnemonicOptions): Promise<FnccMnemonic>
+get(mnemonic: string, options?: FnccBaseOptions): Promise<FnccMnemonic>
+related(mnemonic: string, options?: FnccBaseOptions): Promise<FnccMnemonicRelated>
 ```
 
-Creative/island link-code metadata. `list` filters by `type`; `get` resolves a single mnemonic (`related` attaches related experiences).
+Epic link codes — playlists, experiences and creative islands. `list` filters by part of the link `type` (e.g. `BR:Playlist`); `get` resolves one code with its images, `parentExperience` and `matchmaking` (`v1` / `v2` / `v3`). `related` returns Epic's raw related-links payload (`parentLinks` plus every linked code keyed by mnemonic). Links the server resolves live from Epic (rather than from its mirror) are normalised into the same shape — `title`, `description`, `image` and `images` are filled from the link metadata — and blank strings come back as `null`. `normalizeMnemonic` is exported for raw link objects you fetch yourself.
 
 ## discovery
 <Badge type="info" text="endpoint" /> `fncc.discovery`
@@ -7910,24 +8835,35 @@ list(options?: FnccBaseOptions): Promise<FnccCloudStorageFile[]>
 file(filename: string, options?: FnccBaseOptions): Promise<string>
 ```
 
-`list` returns the system cloud-storage file index; `file` fetches one file's raw contents as a string (e.g. hotfix `.ini` files).
+`list` returns the system cloud-storage (hotfix) file index; `file` fetches one file's raw contents as text, matched case-insensitively (e.g. `DefaultGame.ini`).
 
 ## anticheat
 <Badge type="info" text="endpoint" /> `fncc.anticheat`
 
 ```ts
 info(options?: FnccBaseOptions): Promise<FnccAntiCheat>
-file(name: string, options?: FnccBaseOptions): Promise<FnccAntiCheatFileContent>
+file(name: string, options?: FnccBaseOptions): Promise<string>
+fileUrl(name: string): string
 ```
 
-`info` returns the anti-cheat provider/version summary; `file` fetches a single referenced file's contents.
+`info` returns the Easy Anti-Cheat build shipping with the install — `version`, marketing `productVersion`, `runtimeVersion` and every file, certificate and licence with its size, `sha256` and download `url`. `file` reads a text file (licences, `runtime.conf`, locale configs); for binary files such as `base.cer` use `fileUrl` and download the bytes yourself.
+
+## shorten
+<Badge type="info" text="endpoint" /> `fncc.shorten`
+
+```ts
+create(url: string, options?: FnccBaseOptions): Promise<FnccShortLink>
+stats(options?: FnccBaseOptions): Promise<FnccShortenStats>
+```
+
+`create` returns a short link on fn-api.cc that redirects to an http/https `url` for 24 hours (`expiresAt`); anything else throws `ValidationError` before the request. Shortened content is monitored by fn-api.cc. `stats` reports how many links are live.
 
 ## Errors
 
 fn-api.cc failures surface as the package's standard [`HttpError`](/guide/error-handling) subclasses (`NotFoundError`, `ServerError`, …) with the raw body attached. Synchronous argument validation (blank `category`, `id`, `path`, `query`) rejects with `ValidationError` before any request is sent.
 
----
 
+---
 
 # ═══════════════  Reference  ═══════════════
 

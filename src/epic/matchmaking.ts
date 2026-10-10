@@ -1,4 +1,6 @@
+import { MemoryCache } from '../core/cache.js';
 import { ParseError, ValidationError } from '../core/errors.js';
+import type { RequestCacheOptions } from '../core/types.js';
 import { EpicApiError } from './errors.js';
 import type { SocialBanStatus } from './socialBan.js';
 import type { EpicRestClient } from './rest.js';
@@ -14,6 +16,8 @@ export const MATCHMAKING_DEFAULT_REGION = 'NAE';
 export const MATCHMAKING_DEFAULT_PLAYLIST = 'playlist_defaultsolo';
 
 export const MATCHMAKING_DEFAULT_PLATFORM = 'Windows';
+
+export const MATCHMAKING_NETCL_TTL_MS = 300_000;
 
 export const MATCHMAKING_BAN_ERROR_CODE =
   'errors.com.epicgames.fortnite.player_banned_from_sub_game';
@@ -123,10 +127,21 @@ function isBanError(error: EpicApiError): boolean {
 }
 
 export class MatchmakingManager {
+  private readonly netCLCache = new MemoryCache<string>({ ttl: MATCHMAKING_NETCL_TTL_MS, maxEntries: 1 });
+
   constructor(private readonly rest: EpicRestClient) {}
 
-  async netCL(accessToken: string, options?: MatchmakingOptions): Promise<string> {
+  async netCL(
+    accessToken: string,
+    options?: MatchmakingOptions & { cache?: boolean | RequestCacheOptions },
+  ): Promise<string> {
     requireString(accessToken, 'accessToken');
+    if (!options?.cache) return this.fetchNetCL(accessToken, options);
+    const ttl = typeof options.cache === 'object' ? options.cache.ttl : undefined;
+    return this.netCLCache.wrap('netCL', () => this.fetchNetCL(accessToken, options), ttl);
+  }
+
+  private async fetchNetCL(accessToken: string, options?: MatchmakingOptions): Promise<string> {
     const path = '/fortnite/api/matchmaking/session/matchMakingRequest';
     const response = await this.rest.request<MatchmakingRequestEntry[]>('POST', path, {
       bearer: accessToken,
@@ -152,7 +167,7 @@ export class MatchmakingManager {
     requireString(accountId, 'accountId');
     let netCL = options?.netCL;
     if (!netCL && (!options?.bucketId || !options?.userAgent)) {
-      netCL = await this.netCL(accessToken, options);
+      netCL = await this.netCL(accessToken, { ...options, cache: true });
     }
     const bucketId =
       options?.bucketId ??
